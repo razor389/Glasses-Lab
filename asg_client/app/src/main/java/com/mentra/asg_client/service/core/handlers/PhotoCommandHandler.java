@@ -244,8 +244,7 @@ public class PhotoCommandHandler extends BaseMediaCommandHandler {
                 captureSettings =
                         PhotoCaptureSettings.mergeForSdkRequest(captureSettings, asgSettings);
             }
-            String compress = resolvePhotoCompress(data, asgSettings);
-            // Capture light is mandatory for privacy; ignore any caller-supplied flash value.
+            String compress = resolvePhotoCompress(data, asgSettings);\
             boolean flash = true;
             boolean sound = resolvePhotoSound(data, asgSettings);
             PhotoCaptureSettings.logMergeDiagnostics(
