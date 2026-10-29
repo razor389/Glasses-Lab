@@ -79,8 +79,11 @@ finite phone byte allowance. It requires a fresh authenticated phone readiness g
 readiness declines with an audio cue and never silently changes to local-save mode. A physical
 camera press always stops an active recording, regardless of gallery/readiness state.
 
-The front privacy LED remains latched for the session; the inward status LED lease is renewed
-for long profile recordings. Existing battery monitoring continues across segment rollover.
+The companion has separate photo and video **External capture LED** switches. The
+saved flag controls only the front MTK LED: photos pulse it and videos keep it latched
+when enabled. The inward BES RGB capture indicator remains active regardless of that
+flag, including photo captures during the camera restart cooldown. Its lease is renewed
+for long recordings in every recording mode, and stop/error paths release it. Existing battery monitoring continues across segment rollover.
 Long-duration thermal endurance and the new shared app/button behavior require hardware validation;
 there is no newly added temperature-based recording cutoff. See [the command API](ASG_CLIENT_API.md)
 and [personal media sync](features/personal-media-sync.md) for the negotiated protocol.
@@ -121,9 +124,9 @@ Default segments are 64 MiB with a 256 MiB temporary payload backlog. Session
 duration/byte limits and backlog/free-space guards stop capture without discarding
 unverified media. This mode omits IMU sidecars and thumbnails, retains privacy
 indicators, and does not change ordinary physical-button defaults. Interrupted
-partial segments remain hidden and retained. The front MTK privacy LED stays
-latched on; the separate inward BES RGB white lease is renewed every ten minutes
-for segmented sessions. Local video has no app-level thermal-stop monitor.
+partial segments remain hidden and retained. When enabled by the capture's external LED
+setting, the front MTK privacy LED stays latched on. The separate inward BES RGB white
+lease is always renewed every ten minutes while recording, including segmented sessions. Local video has no app-level thermal-stop monitor.
 A five-minute 720p trial crossed four rollovers, offloaded/reclaimed earlier
 segments during capture, and automatically finalized five decodable files.
 Frame-perfect/audio continuity, interruption/full-storage recovery, and unplugged
@@ -181,6 +184,19 @@ Mentra Live has two LED systems:
 
 1. **Local MTK recording/privacy LED** — controlled directly by MTK through native APIs; used for camera-in-use feedback.
 2. **BES RGB status LED** — controlled by BES during early boot and by forced/direct BES paths for charger transitions, firmware updates, and shutdown; MTK claims authority once UART is ready and sends camera or app-requested RGB commands.
+
+For photo/video capture, the wire field `flash` controls only the external MTK LED.
+Omitted legacy capture/profile values default to enabled. Photo-default patch commands
+preserve the saved flag when it is omitted, and successful settings ACKs echo the actual
+boolean. The companion checks that echo before marking defaults applied. Video starts
+using a saved profile take its immutable LED preference; per-request overrides do not
+change that profile. The inward indicator is independent of this setting. Camera2's
+photographic flash remains disabled. This does not change streaming LED settings.
+
+Validate both switch positions on hardware for app and physical-button capture, all photo
+transfer routes, local and phone-offloaded video, reconnect/restart, recordings longer than
+30 minutes, and stop/error recovery. In every capture, the inward indicator must remain
+active independently of the external setting and clear when recording actually stops.
 
 Camera and streaming features must leave LEDs in a safe state on stop, error, service shutdown, or command cancellation. User-visible privacy indication should not be bypassed accidentally.
 

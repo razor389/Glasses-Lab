@@ -29,6 +29,8 @@ class RecordingSettingsActivity : CompanionActivity() {
   private lateinit var association: Button
   private val gigabyte = BigDecimal("1000000000")
   private lateinit var photoSize: Spinner
+  private lateinit var photoFlash: Switch
+  private lateinit var videoFlash: Switch
   private lateinit var videoResolution: Spinner
   private lateinit var videoFps: Spinner
   private lateinit var videoDuration: Spinner
@@ -156,6 +158,14 @@ class RecordingSettingsActivity : CompanionActivity() {
       refreshDefaults()
     }
     camera.addView(LabUi.text(this, "Larger photos use more storage and take longer to transfer. The camera chooses a supported size; High and Maximum may produce the same dimensions.", 13, LabUi.muted))
+    photoFlash = Switch(this).apply {
+      text = "External capture LED"
+      setTextColor(LabUi.ink)
+      isChecked = true
+      setOnCheckedChangeListener { _, _ -> photoSaveError = null; refreshDefaults() }
+    }
+    camera.addView(photoFlash)
+    camera.addView(LabUi.text(this, "The internal capture indicator stays on for each photo.", 13, LabUi.muted))
     photoDefaultsStatus = LabUi.text(this, "Loading camera defaults…", 14, LabUi.muted)
     camera.addView(photoDefaultsStatus)
     photoSave = LabUi.button(this, "Save camera defaults", primary = true) {
@@ -175,6 +185,14 @@ class RecordingSettingsActivity : CompanionActivity() {
     videoResolution = choice(video, "Video resolution", listOf("720p (1280 × 720)", "1080p (1920 × 1080)"), ::videoEdited)
     videoFps = choice(video, "Frame rate", frameRates.map { "$it FPS" }, ::videoEdited)
     videoDuration = choice(video, "Maximum video length", durations.map { if (it == 0) "No time limit" else "$it minutes" }, ::videoEdited)
+    videoFlash = Switch(this).apply {
+      text = "External capture LED"
+      setTextColor(LabUi.ink)
+      isChecked = true
+      setOnCheckedChangeListener { _, _ -> videoEdited() }
+    }
+    video.addView(videoFlash)
+    video.addView(LabUi.text(this, "The internal capture indicator stays on while recording.", 13, LabUi.muted))
     videoOffload = Switch(this).apply {
       text = "Offload while recording"
       setTextColor(LabUi.ink)
@@ -211,6 +229,8 @@ class RecordingSettingsActivity : CompanionActivity() {
       videoFps.setSelection(savedState.getInt("video_fps_draft", 2).coerceIn(frameRates.indices))
       videoDuration.setSelection(savedState.getInt("video_duration_draft", 1).coerceIn(durations.indices))
       videoOffload.isChecked = savedState.getBoolean("video_offload_draft", false)
+      photoFlash.isChecked = savedState.getBoolean("photo_flash_draft", true)
+      videoFlash.isChecked = savedState.getBoolean("video_flash_draft", true)
     }
   }
 
@@ -238,12 +258,14 @@ class RecordingSettingsActivity : CompanionActivity() {
     }
   }
 
-  private fun photoDraft() = PhotoCaptureProfile(photoSizes[photoSize.selectedItemPosition.coerceIn(photoSizes.indices)])
+  private fun photoDraft() = PhotoCaptureProfile(photoSizes[photoSize.selectedItemPosition.coerceIn(photoSizes.indices)],
+    enableFlash = photoFlash.isChecked)
   private fun videoDraft(): VideoRecordingProfile {
     val resolution = resolutions[videoResolution.selectedItemPosition.coerceIn(resolutions.indices)]
     return VideoRecordingProfile(resolution.first, resolution.second,
       frameRates[videoFps.selectedItemPosition.coerceIn(frameRates.indices)],
-      durations[videoDuration.selectedItemPosition.coerceIn(durations.indices)], videoOffload.isChecked)
+      durations[videoDuration.selectedItemPosition.coerceIn(durations.indices)], videoOffload.isChecked,
+      enableFlash = videoFlash.isChecked)
   }
 
   private fun refreshDefaults() {
@@ -261,6 +283,8 @@ class RecordingSettingsActivity : CompanionActivity() {
 
   override fun onSaveInstanceState(outState: Bundle) {
     outState.putBoolean("video_offload_draft", videoOffload.isChecked)
+    outState.putBoolean("photo_flash_draft", photoFlash.isChecked)
+    outState.putBoolean("video_flash_draft", videoFlash.isChecked)
     outState.putBoolean("capture_drafts_initialized", draftsInitialized)
     outState.putInt("photo_size_draft", photoSize.selectedItemPosition)
     outState.putInt("video_resolution_draft", videoResolution.selectedItemPosition)
@@ -279,6 +303,8 @@ class RecordingSettingsActivity : CompanionActivity() {
       videoFps.setSelection(frameRates.indexOf(defaults.video.fps).coerceAtLeast(0))
       videoDuration.setSelection(durations.indexOf(defaults.video.maxMinutes).coerceAtLeast(0))
       videoOffload.isChecked = defaults.video.offloadToPhone
+      photoFlash.isChecked = defaults.photo.enableFlash
+      videoFlash.isChecked = defaults.video.enableFlash
       draftsInitialized = true
     }
     refreshDefaults()

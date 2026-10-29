@@ -526,6 +526,26 @@ class MentraBluetoothSdk private constructor(
      */
     fun cacheButtonPhotoSize(size: PhotoSize) = CaptureDefaultsCache.photoSize(size)
 
+    /** Stage photo size and the external LED preference before connecting; does not send BLE. */
+    fun cacheButtonPhotoDefaults(size: PhotoSize, enableFlash: Boolean) =
+        CaptureDefaultsCache.photoDefaults(size, enableFlash)
+
+    /** Persist button-photo defaults and require confirmation of both values before caching. */
+    suspend fun setButtonPhotoDefaults(size: PhotoSize, enableFlash: Boolean): SettingsAckEvent =
+        performSettingsCommand(
+            setting = "button_photo",
+            updateStore = { ack ->
+                check(ack.setting == "button_photo" && ack.values["status"] == "applied" &&
+                    ack.values["size"] == size.value && ack.values["flash"] == enableFlash) {
+                    "Glasses did not confirm the photo size and external LED setting."
+                }
+                CaptureDefaultsCache.photoDefaults(size, enableFlash)
+            },
+            send = { requestId -> deviceManager.sendButtonPhotoSettings(
+                requestId, PhotoCaptureDefaults(size = size, enableFlash = enableFlash),
+            ) },
+        )
+
     /** Sets the persistent hardware-button photo size without changing scan presets or cues. */
     suspend fun setButtonPhotoSize(size: PhotoSize): SettingsAckEvent =
         performSettingsCommand(
@@ -554,6 +574,9 @@ class MentraBluetoothSdk private constructor(
                 check(ack.setting == "recording_profile" && ack.values["status"] == "applied") {
                     "Unexpected recording profile acknowledgement."
                 }
+                check(ack.values["flash"] == profile.enableFlash) {
+                    "Glasses did not confirm the flash setting."
+                }
                 check(UnifiedRecordingProfile.fromMap(ack.values) == profile) { "Glasses did not confirm the complete recording profile." }
                 CaptureDefaultsCache.recordingProfile(profile)
             },
@@ -575,7 +598,12 @@ class MentraBluetoothSdk private constructor(
     suspend fun setPhotoCaptureDefaults(settings: PhotoCaptureDefaults): SettingsAckEvent =
         performSettingsCommand(
             setting = "button_photo",
-            updateStore = { _ ->
+            updateStore = { ack ->
+                settings.enableFlash?.let {
+                    check(ack.setting == "button_photo" && ack.values["status"] == "applied" && ack.values["flash"] == it) {
+                        "Glasses did not confirm the external photo LED setting."
+                    }
+                }
                 if (settings.resetCaptureTuning) {
                     // Clear all stored scan-tuning keys from phone cache
                     listOf(
@@ -596,6 +624,7 @@ class MentraBluetoothSdk private constructor(
                 }
                 // Only update size if explicitly provided; omitted size = leave stored value unchanged
                 settings.size?.let { CaptureDefaultsCache.photoSize(it) }
+                settings.enableFlash?.let { DeviceStore.set(ObservableStore.BLUETOOTH_CATEGORY, "button_photo_flash", it) }
                 settings.mfnr?.let { DeviceStore.set(ObservableStore.BLUETOOTH_CATEGORY, "button_photo_mfnr", it) }
                 settings.zsl?.let { DeviceStore.set(ObservableStore.BLUETOOTH_CATEGORY, "button_photo_zsl", it) }
                 settings.noiseReduction?.let {

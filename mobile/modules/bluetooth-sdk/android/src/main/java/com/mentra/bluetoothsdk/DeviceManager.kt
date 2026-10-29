@@ -1717,6 +1717,7 @@ class DeviceManager {
             settings.compress,
             settings.sound,
             settings.resetCaptureTuning == true,
+            enableFlash = settings.enableFlash,
         )
     }
 
@@ -1882,10 +1883,14 @@ class DeviceManager {
 
     fun startVideoRecording(request: VideoRecordingRequest) {
         VideoRecordingCommand.fields(request) // Validate the full request before legacy routing drops optional fields.
+        val live = sgc as? MentraLive
         if (request.useRecordingProfile) {
-            val live = sgc as? MentraLive ?: throw IllegalStateException("unsupported_device")
+            checkNotNull(live) { "unsupported_device" }
             live.startVideoRecordingFromProfile(request)
+        } else if (live != null) {
+            live.startVideoRecording(request)
         } else {
+            check(request.enableFlash == null) { "unsupported_device: external video LED control requires Mentra Live" }
             startVideoRecording(request.requestId, request.save, request.sound, request.width, request.height,
                 request.fps, request.maxRecordingTimeMinutes, request.segmented)
         }

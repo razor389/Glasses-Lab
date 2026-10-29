@@ -19,6 +19,13 @@ internal object CaptureDefaultsCache {
         DeviceStore.set(ObservableStore.BLUETOOTH_CATEGORY, "button_photo_size", size.value)
     }
 
+    /** Stage both button-photo defaults for the next readiness replay. */
+    @Synchronized
+    fun photoDefaults(size: PhotoSize, enableFlash: Boolean) {
+        photoSize(size)
+        DeviceStore.set(ObservableStore.BLUETOOTH_CATEGORY, "button_photo_flash", enableFlash)
+    }
+
     @Synchronized
     fun video(defaults: VideoRecordingDefaults, maxRecordingTimeMinutes: Int) {
         videoDimensions(defaults)

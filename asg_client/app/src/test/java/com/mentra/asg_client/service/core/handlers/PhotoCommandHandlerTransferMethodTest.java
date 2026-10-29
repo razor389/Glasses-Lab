@@ -91,13 +91,13 @@ public class PhotoCommandHandlerTransferMethodTest {
 
     @Test
     public void localQualityIsCarriedIntoArchivalCapture() throws Exception {
-        JSONObject data = takePhotoData().put("save", true).put("qualityProfile", "local");
+        JSONObject data = takePhotoData().put("save", true).put("qualityProfile", "local").put("flash", false);
         data.remove("webhookUrl");
         handler.handleCommand("take_photo", data);
         org.mockito.ArgumentCaptor<PhotoCaptureSettings> settings =
                 org.mockito.ArgumentCaptor.forClass(PhotoCaptureSettings.class);
         verify(captureService).takePhotoForLocalSave(
-                anyString(), eq("req-1"), eq("medium"), eq("photo"), anyBoolean(), anyBoolean(),
+                anyString(), eq("req-1"), eq("medium"), eq("photo"), eq(false), anyBoolean(),
                 nullable(Long.class), nullable(Integer.class), settings.capture());
         assertThat(settings.getValue().qualityProfile)
                 .isEqualTo(com.mentra.asg_client.camera.policy.PhotoQualityProfile.LOCAL);
@@ -105,7 +105,7 @@ public class PhotoCommandHandlerTransferMethodTest {
 
     @Test
     public void localQualityWithUploadFailsBeforeCapture() throws Exception {
-        JSONObject data = takePhotoData().put("save", true).put("qualityProfile", "local");
+        JSONObject data = takePhotoData().put("save", true).put("qualityProfile", "local").put("flash", false);
         assertThat(handler.handleCommand("take_photo", data)).isFalse();
         verify(captureService).sendPhotoErrorResponse(eq("req-1"), eq("INVALID_QUALITY_PROFILE"), anyString());
         verify(captureService, org.mockito.Mockito.never()).takePhotoForLocalSave(
@@ -173,5 +173,21 @@ public class PhotoCommandHandlerTransferMethodTest {
         assertThat(handler.handleCommand("take_photo", data)).isFalse();
         verify(captureService)
                 .sendPhotoErrorResponse(eq("req-1"), eq("INVALID_TRANSFER_METHOD"), anyString());
+    }
+
+    @Test public void disabledFlashSurvivesAllPhotoTransferRoutes() throws Exception {
+        JSONObject data = takePhotoData().put("flash", false);
+        handler.handleCommand("take_photo", data);
+        verify(captureService).takePhotoAutoTransfer(anyString(), eq("req-1"), anyString(), anyString(),
+                eq("ble-1"), anyBoolean(), eq("medium"), eq("photo"), eq(false), eq(true), anyString(),
+                nullable(Long.class), nullable(Integer.class), any(PhotoCaptureSettings.class));
+        handler.handleCommand("take_photo", data.put("transferMethod", "direct"));
+        verify(captureService).takePhotoAndUpload(anyString(), eq("req-1"), anyString(), anyString(),
+                anyBoolean(), eq("medium"), eq("photo"), eq(false), eq(true), anyString(),
+                nullable(Long.class), nullable(Integer.class), any(PhotoCaptureSettings.class));
+        handler.handleCommand("take_photo", data.put("transferMethod", "ble"));
+        verify(captureService).takePhotoForBleTransfer(anyString(), eq("req-1"), eq("ble-1"),
+                anyBoolean(), eq("medium"), eq("photo"), eq(false), eq(true),
+                nullable(Long.class), nullable(Integer.class), any(PhotoCaptureSettings.class));
     }
 }

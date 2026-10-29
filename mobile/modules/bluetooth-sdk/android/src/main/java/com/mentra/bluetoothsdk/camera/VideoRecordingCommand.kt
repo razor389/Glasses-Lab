@@ -11,7 +11,7 @@ internal object VideoRecordingCommand {
         if (request.useRecordingProfile) {
             require(!request.profileRevision.isNullOrBlank()) { "The applied recording profile revision is required." }
             require(request.save && request.width == 0 && request.height == 0 && request.fps == 0 &&
-                request.maxRecordingTimeMinutes == 0 && request.segmented == null) {
+                request.maxRecordingTimeMinutes == 0 && request.segmented == null && request.enableFlash == null) {
                 "A unified recording uses its saved profile, without per-request setting overrides."
             }
             put("useRecordingProfile", true)
@@ -19,6 +19,7 @@ internal object VideoRecordingCommand {
             return@apply
         }
         require(request.profileRevision == null) { "profileRevision requires useRecordingProfile." }
+        request.enableFlash?.let { put("flash", it) }
         // An ordinary request historically omits zero. Segmented requests explicitly
         // carry it so the session duration is independent of saved button defaults.
         if (request.maxRecordingTimeMinutes > 0 || request.segmented != null) {

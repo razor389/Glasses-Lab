@@ -241,6 +241,15 @@ public class SettingsCommandHandler implements ICommandHandler {
     public boolean handleButtonPhotoSetting(JSONObject data) {
         try {
             String requestId = getRequestId(data);
+            Boolean flash = null;
+            if (data.has("flash")) {
+                Object rawFlash = data.get("flash");
+                if (!(rawFlash instanceof Boolean)) {
+                    sendSettingsError(requestId, "button_photo", "invalid_flash", "flash must be a boolean");
+                    return false;
+                }
+                flash = (Boolean) rawFlash;
+            }
             boolean hasSize = data.has("size") && !data.isNull("size");
             String size = PhotoSizeTier.normalize(data.optString("size", "medium"));
             boolean hasMfnr = data.has("mfnr") && !data.isNull("mfnr");
@@ -312,14 +321,12 @@ public class SettingsCommandHandler implements ICommandHandler {
 
             AsgSettings asgSettings = serviceManager.getAsgSettings();
             if (asgSettings != null) {
+                if (!asgSettings.setButtonPhotoDefaults(hasSize ? size : null, flash)) {
+                    sendSettingsError(requestId, "button_photo", "persistence_failed", "Could not save photo defaults");
+                    return false;
+                }
                 if (resetCaptureTuning) {
                     asgSettings.clearButtonPhotoCaptureTuning();
-                }
-                // Only persist size when the update actually carries it; size is optional on the
-                // wire (sender omits it when unchanged), so an unconditional write would clobber a
-                // stored tier (e.g. max) with the "medium" default on a partial/reset-only update.
-                if (hasSize) {
-                    asgSettings.setButtonPhotoSize(size);
                 }
                 if (hasZsl) {
                     asgSettings.setButtonPhotoZsl(zsl);
@@ -385,6 +392,7 @@ public class SettingsCommandHandler implements ICommandHandler {
                 Log.d(TAG, "✅ Button photo settings saved: size=" + ackedSize);
                 JSONObject values = new JSONObject();
                 values.put("size", ackedSize);
+                values.put("flash", asgSettings.getButtonPhotoFlash());
                 values.put("localPhotoQualityVersion", AsgConstants.LOCAL_PHOTO_QUALITY_VERSION);
                 if (mfnr != null) {
                     values.put("mfnr", mfnr);

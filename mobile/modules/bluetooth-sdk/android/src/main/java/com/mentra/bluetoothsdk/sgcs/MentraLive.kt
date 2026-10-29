@@ -5534,6 +5534,7 @@ class MentraLive : SGCManager() {
             }
             json.put("save", save)
             json.put("sound", sound)
+            json.put("flash", request.enableFlash)
             if (exposureTimeNs != null && exposureTimeNs > 0L) {
                 Bridge.log(
                         "LIVE: Using manual exposure time for photo request " +
@@ -6354,10 +6355,12 @@ class MentraLive : SGCManager() {
         compress: String?,
         sound: Boolean?,
         resetCaptureTuning: Boolean,
+        enableFlash: Boolean? = null,
     ) {
         val command = JSONObject()
         try {
             command.put("type", "button_photo_setting")
+            enableFlash?.let { command.put("flash", it) }
             if (requestId != null && !requestId.isEmpty()) {
                 command.put("request_id", requestId)
             }
@@ -9124,9 +9127,11 @@ class MentraLive : SGCManager() {
         val isoCap = DeviceStore.get(ObservableStore.BLUETOOTH_CATEGORY, "button_photo_iso_cap") as Int?
         val compress = DeviceStore.get(ObservableStore.BLUETOOTH_CATEGORY, "button_photo_compress") as String?
         val sound = DeviceStore.get(ObservableStore.BLUETOOTH_CATEGORY, "button_photo_sound") as Boolean?
+        val enableFlash = DeviceStore.get(ObservableStore.BLUETOOTH_CATEGORY, "button_photo_flash") as? Boolean
         sendButtonPhotoSettings(
             null, size, mfnr, zsl, noiseReduction, edgeEnhancement,
             ispDigitalGain, ispAnalogGain, aeExposureDivisor, isoCap, compress, sound, false,
+            enableFlash = enableFlash,
         )
     }
 
@@ -9344,6 +9349,13 @@ class MentraLive : SGCManager() {
     fun requestVideoRecordingStatus(requestId: String?) {
         check(isConnected) { "Glasses are not connected." }
         sendJson(JSONObject(RecordingProfileCommand.statusFields(requestId)), true)
+    }
+
+    /** Forward the complete ordinary request so optional settings survive SDK routing. */
+    fun startVideoRecording(request: VideoRecordingRequest) {
+        check(isConnected) { "Glasses are not connected." }
+        require(!request.useRecordingProfile)
+        sendJson(JSONObject(VideoRecordingCommand.fields(request)), true)
     }
 
     fun startVideoRecordingFromProfile(request: VideoRecordingRequest) {

@@ -88,4 +88,58 @@ public class RecordingProfileTest {
         assertTrue(reopened.isRecordingGrantConsumed("grant", "other"));
         assertFalse(reopened.claimRecordingGrant("other", "session"));
     }
+
+    @Test public void externalFlashSurvivesPersistenceAndLegacyProfileUpdates() throws Exception {
+        RecordingProfile disabled = new RecordingProfile("flash-off", 1280, 720, 15, 30, "local", 64L<<20, 256L<<20, false);
+        AsgSettings settings = new AsgSettings(context);
+        assertTrue(settings.setRecordingProfile(disabled));
+        assertFalse(new AsgSettings(context).getRecordingProfile().enableFlash);
+        assertFalse(RecordingProfile.fromJson(disabled.toJson()).enableFlash);
+        assertFalse(disabled.withDuration(60).enableFlash);
+        assertFalse(disabled.withVideo(new VideoSettings(1920, 1080, 30)).enableFlash);
+        assertThrows(IllegalArgumentException.class, () -> settings.setRecordingProfile(
+                new RecordingProfile("flash-off", 1280, 720, 15, 30, "local", 64L<<20, 256L<<20, true)));
+        JSONObject legacy = disabled.toJson();
+        legacy.remove("flash");
+        assertTrue(RecordingProfile.fromJson(legacy).enableFlash);
+        for (Object invalid : new Object[] {"false", 0, JSONObject.NULL}) {
+            assertThrows(IllegalArgumentException.class, () -> RecordingProfile.fromJson(legacy.put("flash", invalid)));
+        }
+    }
+
+    @Test public void photoDefaultsPersistFalseAndPartialUpdatesPreserveIt() {
+        AsgSettings settings = new AsgSettings(context);
+        assertTrue(settings.getButtonPhotoFlash());
+        assertTrue(settings.setButtonPhotoDefaults("high", false));
+        settings = new AsgSettings(context);
+        assertEquals("high", settings.getButtonPhotoSize());
+        assertFalse(settings.getButtonPhotoFlash());
+        settings.setButtonPhotoSize("low");
+        settings.clearButtonPhotoCaptureTuning();
+        assertFalse(new AsgSettings(context).getButtonPhotoFlash());
+        assertTrue(settings.setButtonPhotoFlash(true));
+        assertEquals("low", new AsgSettings(context).getButtonPhotoSize());
+        assertTrue(new AsgSettings(context).getButtonPhotoFlash());
+    }
+
+    @Test public void failedPhotoCommitRestoresBothPreviousValues() {
+        SharedPreferences real = context.getSharedPreferences("asg_settings", 0);
+        SharedPreferences wrapped = spy(real);
+        Context fakeContext = mock(Context.class);
+        when(fakeContext.getSharedPreferences("asg_settings", 0)).thenReturn(wrapped);
+        AsgSettings settings = new AsgSettings(fakeContext);
+        assertTrue(settings.setButtonPhotoDefaults("high", false));
+        SharedPreferences.Editor failing = mock(SharedPreferences.Editor.class, RETURNS_SELF);
+        doAnswer(invocation -> {
+            real.edit().putString("button_photo_size", "low")
+                    .putBoolean(AsgConstants.BUTTON_PHOTO_FLASH_KEY, true).commit();
+            return false;
+        }).when(failing).commit();
+        when(wrapped.edit()).thenReturn(failing, real.edit());
+        assertFalse(settings.setButtonPhotoDefaults("low", true));
+        assertEquals("high", settings.getButtonPhotoSize());
+        assertFalse(settings.getButtonPhotoFlash());
+        assertEquals("high", new AsgSettings(context).getButtonPhotoSize());
+        assertFalse(new AsgSettings(context).getButtonPhotoFlash());
+    }
 }

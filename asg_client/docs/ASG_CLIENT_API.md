@@ -17,14 +17,15 @@ Both paths funnel into `CommandProcessor.processJsonCommand(JSONObject)`, so all
 
 Capability `recording_profile_version: 1` permits `set_recording_profile` over BLE. It atomically
 persists `revision`, `width`, `height`, `fps`, `maxRecordingTimeMinutes`, `mode` (`local` or `phone`),
-`segmentMaxBytes`, and `maxBacklogBytes`. Optional `requestId` correlates the `settings_ack`:
+`segmentMaxBytes`, `maxBacklogBytes`, and `flash` (external capture LED only; defaults to true when omitted). Optional `requestId` correlates the `settings_ack`:
 `setting: "recording_profile"`, `status: "applied"`, and the actual full profile as flat fields.
 An omitted request ID supports reconnect replay without an ACK. A revision cannot be reused for different values.
 Supported sizes are 1280×720 and 1920×1080, fps 5/15/30, and durations 0/3/5/10/15/20/30/60/120;
 0 disables the session timer while physical storage and byte limits remain enforced.
 
 App `start_video_recording` uses `requestId`, `useRecordingProfile: true`, and `profileRevision`.
-The physical long press resolves the same stored profile. Phone-mode starts consume the authenticated
+The physical long press resolves the same stored profile, including its external LED flag.
+Profile starts use that snapshot and ignore any per-request capture setting overrides. Phone-mode starts consume the authenticated
 single-use readiness grant described in [personal media sync](features/personal-media-sync.md).
 The grant predetermines the session ID for both entry points. No readiness means no recording,
 with an audio cue on physical starts. Stop remains available while starting or recording.
@@ -46,10 +47,14 @@ receive a correlated `photo_response` error with code `INVALID_QUALITY_PROFILE`
 before output allocation or capture. Omitted or `"default"` quality preserves
 existing request behavior.
 
-`button_photo_setting` still stores `size` (`low`, `medium`, `high`, `max`). Its
-successful `settings_ack` has `setting: "button_photo"`, the effective stored
-`size`, and `localPhotoQualityVersion: 1`. Check the capability before sending
-Local requests; older glasses may ignore unknown request fields.
+`button_photo_setting` stores `size` (`low`, `medium`, `high`, `max`) and optional
+boolean `flash` for the external LED. Omitted patch fields preserve their saved values,
+including on scan-tuning reset. Size and flash are committed together; persistence failure
+returns an error. A new installation defaults flash to true. Successful `settings_ack`
+responses include `setting: "button_photo"`, the effective stored `size` and `flash`,
+and `localPhotoQualityVersion: 1`. Check the capability and the exact flash echo before
+marking defaults applied; older glasses may ignore unknown fields. The inward capture
+indicator is always enabled, including when `flash` is false.
 
 Local resolution targets are 960×720, 1440×1088, and 3264×2448 for Low, Medium,
 and High. Maximum uses the largest supported JPEG output. The camera chooses a
@@ -149,7 +154,7 @@ Capture a still photo. The handler routes through `transferMethod` to one of thr
 - If detection finds no usable text region or fails, the pipeline preserves the full frame and retains the smaller 1920 px fallback cap.
 - Best results on documents, signs, and windshield VIN stickers; plain scenes may look similar to `photo` when the full-frame fallback is used.
 | `compress`           | string  | `"none"`            | Compression preset passed to capture pipeline               |
-| `flash`              | boolean | `true`              | Fire the privacy LED during capture                         |
+| `flash`              | boolean | `true`              | Pulse external LED; inward indicator stays enabled                         |
 | `sound`              | boolean | `true`              | Play shutter sound                                          |
 | `exposureTimeNs`     | number  | absent              | Optional one-shot manual sensor exposure time in ns         |
 | `iso`                | number  | absent              | Optional one-shot manual sensor ISO; ignored without manual exposure |
@@ -300,7 +305,7 @@ Wire response type for all video commands: `video_recording_status`.
 | `settings.height` | int     | sensor default | Optional capture height      |
 | `settings.fps`    | int     | 30             | Frames per second            |
 | `save`            | boolean | `false`        | Save to local gallery        |
-| `flash`           | boolean | `true`         | Privacy LED during recording |
+| `flash`           | boolean | `true`         | External LED during recording; inward indicator stays enabled |
 | `sound`           | boolean | `true`         | Start/stop tones             |
 
 Same battery constraint as photo. `recording_started` is the successful start status. `already_recording`, `battery_low`, `service_unavailable`, `missing_request_id`, and `error` are emitted with `success: false`.
@@ -811,7 +816,7 @@ Persists the resolution/fps used when the hardware camera button starts a video.
 #### `button_photo_setting`
 
 ```json
-{"type": "button_photo_setting", "size": "high"}
+{"type": "button_photo_setting", "size": "high", "flash": false}
 ```
 
 `size` is one of `low`, `medium`, `high`, or `max`. Legacy values `small`, `large`, and `full` are normalized on ingest.

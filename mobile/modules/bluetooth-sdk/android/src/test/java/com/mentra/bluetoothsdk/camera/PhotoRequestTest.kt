@@ -138,4 +138,16 @@ class PhotoRequestTest {
             .isInstanceOf(IllegalArgumentException::class.java)
             .hasMessage("Invalid transferMethod \"wifi\". Expected auto, direct, or ble.")
     }
+
+    @Test fun externalFlashDefaultsOnButExplicitFalseSurvivesRoutingCopy() {
+        val defaults = com.mentra.bluetoothsdk.PhotoRequest.fromMap(emptyMap())
+        org.junit.Assert.assertTrue(defaults.enableFlash)
+        val request = com.mentra.bluetoothsdk.PhotoRequest.fromMap(mapOf("flash" to false))
+        org.junit.Assert.assertFalse(request.copy(exposureTimeNs = 1000.0, iso = 100).enableFlash)
+        for (invalid in listOf("false", 0)) {
+            org.junit.Assert.assertThrows(IllegalStateException::class.java) {
+                com.mentra.bluetoothsdk.PhotoRequest.fromMap(mapOf("flash" to invalid))
+            }
+        }
+    }
 }

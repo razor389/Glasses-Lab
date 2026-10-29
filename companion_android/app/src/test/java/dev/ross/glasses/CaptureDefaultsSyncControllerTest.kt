@@ -14,6 +14,8 @@ class CaptureDefaultsSyncControllerTest {
     var cachedVideo = VideoRecordingProfile()
     var cachedRevision = "0"
     var capability = true
+    var echoFlash = true
+    var photoAckOverrides: Map<String, Any> = emptyMap()
     var videoFailures = 0
     var videoAckOverrides: Map<String, Any> = emptyMap()
     var photoGate: CompletableDeferred<Unit>? = null
@@ -30,7 +32,8 @@ class CaptureDefaultsSyncControllerTest {
       photoGate?.await()
       // Reproduce the SDK's cache update after ACK.
       cachedPhoto = profile
-      return ack("button_photo", mapOf("size" to profile.size.value, "localPhotoQualityVersion" to if (capability) 1 else 0))
+      return ack("button_photo", mapOf("size" to profile.size.value, "localPhotoQualityVersion" to if (capability) 1 else 0) +
+        (if (echoFlash) mapOf("flash" to profile.enableFlash) else emptyMap()) + photoAckOverrides)
     }
     override suspend fun video(profile: VideoRecordingProfile, revision: String): SettingsAckEvent {
       videoCalls++
@@ -39,7 +42,7 @@ class CaptureDefaultsSyncControllerTest {
       if (videoFailures-- > 0) error("timeout")
       // Reproduce the SDK's post-ACK cache update, including stale in-flight requests.
       cachedVideo = profile; cachedRevision = revision
-      return ack("recording_profile", profile.sdkProfile(revision).values() + videoAckOverrides)
+      return ack("recording_profile", (profile.sdkProfile(revision).values() - (if (echoFlash) emptySet() else setOf("flash"))) + videoAckOverrides)
     }
   }
   private fun TestScope.controller(transport: Transport) = CaptureDefaultsSyncController(
@@ -80,6 +83,7 @@ class CaptureDefaultsSyncControllerTest {
       mapOf("mode" to "phone"),
       mapOf("maxRecordingTimeMinutes" to 120),
       mapOf("revision" to "1"),
+      mapOf("flash" to false),
     )) {
       val transport = Transport().apply { videoAckOverrides = mismatch }
       val sync = controller(transport)
@@ -98,7 +102,7 @@ class CaptureDefaultsSyncControllerTest {
     val gate = CompletableDeferred<Unit>()
     val transport = Transport().apply { photoGate = gate }; val sync = controller(transport)
     sync.connection("a"); runCurrent()
-    val next = PhotoCaptureProfile(PhotoSize.LOW)
+    val next = PhotoCaptureProfile(PhotoSize.LOW, enableFlash = false)
     sync.savePhoto(SavedProfile(next, 1)); runCurrent()
     assertFalse(sync.photoApplied)
     assertTrue(sync.applying)
@@ -115,7 +119,7 @@ class CaptureDefaultsSyncControllerTest {
     val sync = controller(transport)
     sync.connection("a"); runCurrent()
     assertEquals(1, transport.videoCalls)
-    val next = VideoRecordingProfile(1920, 1080, 15, 120, offloadToPhone = true)
+    val next = VideoRecordingProfile(1920, 1080, 15, 120, offloadToPhone = true, enableFlash = false)
     sync.saveVideo(SavedProfile(next, 1)); runCurrent()
     assertFalse(sync.videoApplied)
     assertEquals(next, transport.cachedVideo)
@@ -152,5 +156,29 @@ class CaptureDefaultsSyncControllerTest {
     assertEquals("1", transport.cachedRevision); assertEquals(0, transport.videoCalls)
     assertFalse(sync.videoApplied); assertFalse(sync.applying)
     sync.connection("a"); advanceUntilIdle(); assertTrue(sync.videoApplied)
+  }
+
+  @Test fun olderGlassesMustEchoFlashEvenWhenItDefaultsToTrue() = runTest {
+    val transport = Transport().apply { echoFlash = false }
+    val sync = controller(transport)
+    sync.connection("a"); advanceUntilIdle()
+    assertFalse(sync.photoApplied); assertFalse(sync.videoApplied)
+    assertEquals(4, transport.photoCalls); assertEquals(4, transport.videoCalls)
+    transport.echoFlash = true
+    sync.retryPhoto(); sync.retryVideo(); advanceUntilIdle()
+    assertTrue(sync.photoApplied); assertTrue(sync.videoApplied)
+  }
+  @Test fun mismatchedPhotoFlashCannotClaimApplied() = runTest {
+    val transport = Transport().apply { photoAckOverrides = mapOf("flash" to true) }
+    val sync = controller(transport)
+    sync.savePhoto(SavedProfile(PhotoCaptureProfile(enableFlash = false), 1))
+    sync.connection("a"); advanceUntilIdle()
+    assertFalse(sync.photoApplied); assertTrue(sync.videoApplied)
+    transport.photoAckOverrides = emptyMap()
+    sync.retryPhoto(); advanceUntilIdle()
+    assertTrue(sync.photoApplied)
+    sync.connection(null); sync.connection("b"); advanceUntilIdle()
+    assertFalse(transport.cachedPhoto.enableFlash)
+    assertTrue(sync.photoApplied)
   }
 }

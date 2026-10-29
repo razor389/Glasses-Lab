@@ -38,10 +38,10 @@ class GlassesController(
   val defaults = CaptureDefaultsSyncController(recordings.settings.photoDefaults(), recordings.settings.videoDefaults(),
     object : CaptureDefaultsTransport {
       override fun cache(photo: PhotoCaptureProfile, video: VideoRecordingProfile, revision: String) {
-        sdk?.cacheButtonPhotoSize(photo.size)
+        sdk?.cacheButtonPhotoDefaults(photo.size, photo.enableFlash)
         sdk?.cacheRecordingProfile(video.sdkProfile(revision))
       }
-      override suspend fun photo(profile: PhotoCaptureProfile) = client().setButtonPhotoSize(profile.size)
+      override suspend fun photo(profile: PhotoCaptureProfile) = client().setButtonPhotoDefaults(profile.size, profile.enableFlash)
       override suspend fun video(profile: VideoRecordingProfile, revision: String) = client().setRecordingProfile(profile.sdkProfile(revision))
     }, scope, ::changed)
   val audio: BluetoothAudio = BluetoothAudio(context, { preferences.getString("address", null) }, { savedDeviceName }) {
@@ -149,7 +149,7 @@ class GlassesController(
       listener,
     ).also { instance ->
       sdk = instance
-      instance.cacheButtonPhotoSize(defaults.photo.size)
+      instance.cacheButtonPhotoDefaults(defaults.photo.size, defaults.photo.enableFlash)
       instance.cacheRecordingProfile(defaults.video.sdkProfile(defaults.videoRevision))
       savedDeviceName?.let { name ->
         instance.setDefaultDevice(Device(

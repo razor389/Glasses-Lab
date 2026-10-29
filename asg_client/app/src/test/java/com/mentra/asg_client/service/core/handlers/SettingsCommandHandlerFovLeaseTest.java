@@ -90,12 +90,15 @@ public class SettingsCommandHandlerFovLeaseTest {
         AsgSettings settings = mock(AsgSettings.class);
         when(serviceManager.getAsgSettings()).thenReturn(settings);
         when(settings.getButtonPhotoSize()).thenReturn("high");
+        when(settings.getButtonPhotoFlash()).thenReturn(true);
+        when(settings.setButtonPhotoDefaults("high", null)).thenReturn(true);
         assertThat(handler.handleCommand("button_photo_setting", new JSONObject()
                 .put("request_id", "photo-defaults-1").put("size", "high"))).isTrue();
         JSONObject ack = responses.get(responses.size() - 1);
         assertThat(ack.getString("setting")).isEqualTo("button_photo");
         assertThat(ack.getString("size")).isEqualTo("high");
         assertThat(ack.getInt("localPhotoQualityVersion")).isEqualTo(1);
+        assertThat(ack.getBoolean("flash")).isTrue();
         org.mockito.Mockito.verify(settings, org.mockito.Mockito.never()).clearButtonPhotoCaptureTuning();
     }
 
@@ -115,5 +118,35 @@ public class SettingsCommandHandlerFovLeaseTest {
         return new JSONObject()
                 .put("request_id", "release-1")
                 .put("params", new JSONObject().put("lease_id", leaseId));
+    }
+
+    @Test public void photoFlashAckEchoesStoredFalseAndOmittedUpdatesPreserveIt() throws Exception {
+        AsgSettings settings = new AsgSettings(androidx.test.core.app.ApplicationProvider.getApplicationContext());
+        when(serviceManager.getAsgSettings()).thenReturn(settings);
+        assertThat(handler.handleButtonPhotoSetting(new JSONObject().put("request_id", "set")
+                .put("size", "high").put("flash", false))).isTrue();
+        assertThat(responses.get(responses.size() - 1).getBoolean("flash")).isFalse();
+        assertThat(handler.handleButtonPhotoSetting(new JSONObject().put("request_id", "reset")
+                .put("resetCaptureTuning", true))).isTrue();
+        JSONObject ack = responses.get(responses.size() - 1);
+        assertThat(ack.getBoolean("flash")).isFalse();
+        assertThat(ack.getString("size")).isEqualTo("high");
+        for (Object invalid : new Object[] {"false", 0, JSONObject.NULL}) {
+            assertThat(handler.handleButtonPhotoSetting(new JSONObject().put("request_id", "invalid")
+                    .put("size", "low").put("flash", invalid))).isFalse();
+            assertThat(responses.get(responses.size() - 1).getString("error_code")).isEqualTo("invalid_flash");
+            assertThat(settings.getButtonPhotoSize()).isEqualTo("high");
+            assertThat(settings.getButtonPhotoFlash()).isFalse();
+        }
+    }
+
+    @Test public void photoPersistenceFailureCannotSendAppliedAck() throws Exception {
+        AsgSettings settings = mock(AsgSettings.class);
+        when(serviceManager.getAsgSettings()).thenReturn(settings);
+        assertThat(handler.handleButtonPhotoSetting(new JSONObject().put("request_id", "failed")
+                .put("flash", false))).isFalse();
+        JSONObject ack = responses.get(responses.size() - 1);
+        assertThat(ack.getString("status")).isEqualTo("error");
+        assertThat(ack.getString("error_code")).isEqualTo("persistence_failed");
     }
 }

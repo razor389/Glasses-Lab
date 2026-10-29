@@ -1334,7 +1334,7 @@ public class MediaCaptureService {
         // Save info for the current recording session
         currentVideoId = requestId;
         currentVideoPath = videoFilePath;
-        currentVideoLedEnabled = enableFlash; // Track LED state for this recording
+        currentVideoLedEnabled = enableFlash; // External MTK LED only; inward RGB is always enabled.
         currentVideoSoundEnabled = enableSound; // Track sound state for this recording
         final String captureIdAtStart = captureIdFromVideoAbsPath(videoFilePath);
         if (captureIdAtStart != null && (settings == null || settings.segmented == null)) {
@@ -1347,9 +1347,7 @@ public class MediaCaptureService {
             if (enableSound) {
                 playVideoStartSound();
             }
-            if (enableFlash) {
-                triggerVideoRecordingLed(); // Trigger solid white LED for video recording duration
-            }
+            triggerVideoRecordingLed(); // Inward capture indication is independent of the external LED setting.
 
             // Start video recording using CameraNeoService
             CameraNeoService.startVideoRecording(
@@ -1358,7 +1356,7 @@ public class MediaCaptureService {
                     videoFilePath,
                     settings,
                     new CameraNeoService.VideoRecordingCallback() {
-                        private long lastSegmentedLedRenewalElapsedMs;
+                        private long lastInternalLedRenewalElapsedMs;
 
                         @Override
                         public void onSegmentedRecordingStopped(String videoId, int count, String reason, boolean success) {
@@ -1419,7 +1417,7 @@ public class MediaCaptureService {
                             Log.d(TAG, "Video recording started with ID: " + videoId);
                             isRecordingVideo = true;
                             recordingStartTime = System.currentTimeMillis();
-                            lastSegmentedLedRenewalElapsedMs = android.os.SystemClock.elapsedRealtime();
+                            lastInternalLedRenewalElapsedMs = android.os.SystemClock.elapsedRealtime();
 
                             // Start battery monitoring on main thread (callback runs on background
                             // thread)
@@ -1784,16 +1782,15 @@ public class MediaCaptureService {
 
                         @Override
                         public void onRecordingProgress(String videoId, long durationMs) {
-                            // The front MTK privacy LED is latched on until stop. The separate
-                            // inward BES status LED has a 30-minute lease, so renew it while this
-                            // exact segmented session remains active. Wall-clock changes must not
+                            // The inward BES status LED has a 30-minute lease. Renew it for every
+                            // recording mode regardless of the external LED setting, while this
+                            // exact session remains active. Wall-clock changes must not
                             // expire the indication early, and old callbacks must not relight it.
-                            if (settings != null && (settings.segmented != null || settings.recordingProfile != null) && enableFlash
-                                    && isRecordingVideo && requestId.equals(videoId)
+                            if (isRecordingVideo && requestId.equals(videoId)
                                     && requestId.equals(currentVideoId)) {
                                 long now = android.os.SystemClock.elapsedRealtime();
-                                if (now - lastSegmentedLedRenewalElapsedMs >= AsgConstants.VIDEO_SEGMENT_LED_RENEWAL_MS) {
-                                    lastSegmentedLedRenewalElapsedMs = now;
+                                if (now - lastInternalLedRenewalElapsedMs >= AsgConstants.VIDEO_SEGMENT_LED_RENEWAL_MS) {
+                                    lastInternalLedRenewalElapsedMs = now;
                                     triggerVideoRecordingLed();
                                 }
                             }
@@ -1960,7 +1957,7 @@ public class MediaCaptureService {
                     if (mServiceCallback != null) mServiceCallback.sendThroughBluetooth(
                             active.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 } catch (JSONException encoding) { Log.e(TAG, "Cannot encode stop failure", encoding); }
-                if (currentVideoLedEnabled) triggerVideoRecordingLed();
+                triggerVideoRecordingLed();
                 mainHandler.post(() -> { if (isRecordingVideo) startBatteryMonitoring(); });
                 return;
             }
@@ -2322,11 +2319,10 @@ public class MediaCaptureService {
         // TESTING: Add fake delay for camera init
         PhotoCaptureTestHooks.addFakeDelay("CAMERA_INIT");
 
-        // Skip sound and flash during camera HAL restart cooldown (e.g. after FOV change)
+        // Suppress optional sound and external flash during camera HAL restart cooldown.
         PhotoFeedbackController.Token feedbackToken = null;
+        triggerPhotoFlashLed(); // Inward capture indication also applies during restart cooldown.
         if (!shouldSuppressPhotoFeedback()) {
-            // RGB LED always flashes for photos (user visibility indicator)
-            triggerPhotoFlashLed();
             if (effectiveSound) {
                 // Button photo: isFromSdk=false, auto exposure (null) — matches the
                 // enqueuePhotoRequest call below so the warm/cold prediction lines up.
@@ -2572,8 +2568,8 @@ public class MediaCaptureService {
         final String captureId = captureDirFile != null ? captureDirFile.getName() : "";
 
         PhotoFeedbackController.Token feedbackToken = null;
+        triggerPhotoFlashLed(); // Independent of the external LED setting and restart cooldown.
         if (!shouldSuppressPhotoFeedback()) {
-            triggerPhotoFlashLed();
             if (enableSound) {
                 // Local-save SDK photo: isFromSdk=true, matching the enqueue below.
                 feedbackToken =
@@ -2976,9 +2972,9 @@ public class MediaCaptureService {
 
         PhotoFeedbackController.Token feedbackToken = null;
         try {
-            // Skip sound and flash during camera HAL restart cooldown (e.g. after FOV change)
+            // Suppress optional sound and external flash during camera HAL restart cooldown.
+            triggerPhotoFlashLed(); // Always indicate an actual capture to the wearer.
             if (!shouldSuppressPhotoFeedback()) {
-                triggerPhotoFlashLed();
                 if (enableSound) {
                     // SDK photo: isFromSdk=true; size and exposure match the enqueuePhotoRequest
                     // call below so the warm/cold prediction lines up.
@@ -5368,10 +5364,10 @@ public class MediaCaptureService {
         // TESTING: Add fake delay for camera capture
         PhotoCaptureTestHooks.addFakeDelay("CAMERA_CAPTURE");
 
-        // Skip sound and flash during camera HAL restart cooldown (e.g. after FOV change)
+        // Suppress optional sound and external flash during camera HAL restart cooldown.
         PhotoFeedbackController.Token feedbackToken = null;
+        triggerPhotoFlashLed(); // Independent of the external LED setting and restart cooldown.
         if (!shouldSuppressPhotoFeedback()) {
-            triggerPhotoFlashLed();
             if (enableSound) {
                 // BLE-transfer SDK photo: isFromSdk=true; size and exposure match the
                 // enqueuePhotoRequest call below so the warm/cold prediction lines up.

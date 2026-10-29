@@ -10,6 +10,8 @@ data class UnifiedRecordingProfile(
     val mode: String,
     val segmentMaxBytes: Long = 64L * 1024 * 1024,
     val maxBacklogBytes: Long = 256L * 1024 * 1024,
+    /** External capture LED only; inward recording indication is always enabled. */
+    val enableFlash: Boolean = true,
 ) {
     init {
         require(revision.isNotBlank() && revision.toByteArray(Charsets.UTF_8).size <= 128) { "A recording profile revision is required." }
@@ -25,6 +27,7 @@ data class UnifiedRecordingProfile(
         "revision" to revision, "width" to width, "height" to height, "fps" to fps,
         "maxRecordingTimeMinutes" to maxRecordingTimeMinutes, "mode" to mode,
         "segmentMaxBytes" to segmentMaxBytes, "maxBacklogBytes" to maxBacklogBytes,
+        "flash" to enableFlash,
     )
 
     companion object {
@@ -45,6 +48,12 @@ data class UnifiedRecordingProfile(
                 maxRecordingTimeMinutes = smallInteger("maxRecordingTimeMinutes"),
                 mode = values["mode"] as? String ?: error("Missing mode"),
                 segmentMaxBytes = integer("segmentMaxBytes"), maxBacklogBytes = integer("maxBacklogBytes"),
+                enableFlash = if (values.containsKey("flash")) {
+                    values["flash"] as? Boolean
+                        ?: error("flash must be a boolean")
+                } else {
+                    true
+                },
             )
         }.getOrNull()
     }

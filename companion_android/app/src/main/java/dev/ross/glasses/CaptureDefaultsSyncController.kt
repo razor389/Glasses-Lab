@@ -97,7 +97,8 @@ class CaptureDefaultsSyncController(
         try {
           if (isPhoto) {
             val ack = transport.photo(photoSnapshot.profile)
-            validate(ack, "button_photo", mapOf("size" to photoSnapshot.profile.size.value))
+            validate(ack, "button_photo", mapOf("size" to photoSnapshot.profile.size.value,
+              "flash" to photoSnapshot.profile.enableFlash))
             if ((ack.values["localPhotoQualityVersion"] as? Number)?.toDouble() != 1.0) throw UnsupportedPhotoDefaults()
           } else {
             val profile = videoSnapshot.profile
@@ -105,7 +106,7 @@ class CaptureDefaultsSyncController(
               "revision" to videoSnapshot.revision.toString(), "width" to profile.width,
               "height" to profile.height, "fps" to profile.fps, "maxRecordingTimeMinutes" to profile.maxMinutes,
               "mode" to if (profile.offloadToPhone) "phone" else "local",
-              "segmentMaxBytes" to PhoneVideoPlan.SEGMENT_BYTES, "maxBacklogBytes" to PhoneVideoPlan.BACKLOG_BYTES))
+              "segmentMaxBytes" to PhoneVideoPlan.SEGMENT_BYTES, "maxBacklogBytes" to PhoneVideoPlan.BACKLOG_BYTES, "flash" to profile.enableFlash,))
           }
           if (epoch == generation && (if (isPhoto) photoSnapshot == savedPhoto else videoSnapshot == savedVideo)) domain.status = Status.APPLIED
         } catch (cancelled: CancellationException) { throw cancelled }

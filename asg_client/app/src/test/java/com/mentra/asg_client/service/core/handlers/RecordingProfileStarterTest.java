@@ -82,4 +82,12 @@ public class RecordingProfileStarterTest {
         verify(capture).finishProfileRecording(eq("session"),any(),eq(0),eq("grant_persistence_error"),eq(false));
         verify(capture,never()).handleStartVideoCommand(anyString(),anyBoolean(),any(),anyBoolean(),anyBoolean(),anyInt());
     }
+
+    @Test public void bothOriginsUseDisabledExternalFlashFromSavedProfile() {
+        when(settings.getRecordingProfile()).thenReturn(
+                new RecordingProfile("revision",1280,720,15,60,"local",64L<<20,256L<<20,false));
+        RecordingProfileStarter.start(manager,"app-id","revision","app",true);
+        RecordingProfileStarter.start(manager,null,null,"button",true);
+        verify(capture,times(2)).handleStartVideoCommand(anyString(),eq(true),any(),eq(false),eq(true),eq(60));
+    }
 }

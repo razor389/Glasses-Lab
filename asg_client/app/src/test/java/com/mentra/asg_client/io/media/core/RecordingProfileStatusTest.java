@@ -65,7 +65,8 @@ public class RecordingProfileStatusTest {
         ReflectionHelpers.setField(capture,"isRecordingVideo",true);
         ReflectionHelpers.setField(capture,"currentVideoId","session");
         ReflectionHelpers.setField(capture,"currentVideoPath","/tmp/VID_local/base.mp4");
-        ReflectionHelpers.setField(capture,"currentVideoLedEnabled",true);
+        ReflectionHelpers.setField(capture,"currentVideoLedEnabled",false);
+        when(hardware.supportsRgbLed()).thenReturn(true);
         when(hardware.supportsRecordingLed()).thenReturn(true);
         try (MockedStatic<CameraNeoService> camera = mockStatic(CameraNeoService.class)) {
             camera.when(() -> CameraNeoService.stopVideoRecording(context,"session"))
@@ -84,5 +85,7 @@ public class RecordingProfileStatusTest {
         assertFalse(status.has("segmentCount"));
         assertNull(capture.getSegmentedTerminalStatus("session"));
         verify(hardware,never()).setRecordingLedOff();
+        verify(hardware,never()).setRecordingLedOn();
+        verify(hardware,times(2)).setRgbLedSolidWhite(eq(1800000),anyInt());
     }
 }

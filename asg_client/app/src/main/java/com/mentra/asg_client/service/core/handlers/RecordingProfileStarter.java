@@ -45,7 +45,7 @@ public final class RecordingProfileStarter {
                 return sessionId;
             }
             try {
-                capture.handleStartVideoCommand(sessionId, true, video, true, sound, profile.maxRecordingTimeMinutes);
+                capture.handleStartVideoCommand(sessionId, true, video, profile.enableFlash, sound, profile.maxRecordingTimeMinutes);
             } catch (Exception error) {
                 capture.finishProfileRecording(sessionId, video, 0, "start_error", false);
             }

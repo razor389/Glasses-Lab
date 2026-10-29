@@ -54,6 +54,7 @@ public class ButtonEventSubscriberTest {
         when(bluetoothManager.isConnected()).thenReturn(false);
         when(asgSettings.isSaveInGalleryMode()).thenReturn(false);
         when(asgSettings.getButtonPhotoSize()).thenReturn("medium");
+        when(asgSettings.getButtonPhotoFlash()).thenReturn(true);
         when(captureService.isRecordingVideo()).thenReturn(false);
 
         subscriber =
@@ -150,5 +151,11 @@ public class ButtonEventSubscriberTest {
         shortPress();
 
         verify(captureService).takePhotoLocally(anyString(), anyBoolean(), anyBoolean());
+    }
+
+    @Test public void buttonPhotoUsesSavedExternalFlashPreference() {
+        when(serviceManager.getAsgSettings().getButtonPhotoFlash()).thenReturn(false);
+        shortPress();
+        verify(captureService).takePhotoLocally("medium", false, true);
     }
 }

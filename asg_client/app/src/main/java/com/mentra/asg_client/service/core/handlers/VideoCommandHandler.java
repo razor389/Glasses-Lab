@@ -216,7 +216,7 @@ public class VideoCommandHandler extends BaseMediaCommandHandler {
                 VideoSettings base = videoSettings != null ? videoSettings : VideoSettings.getDefault();
                 videoSettings = new VideoSettings(base.width, base.height, base.fps, options);
             }
-            boolean flash = true;
+            boolean flash = data.optBoolean("flash", true);
             boolean sound = data.optBoolean("sound", true);
             // Optional auto-stop after N minutes; 0 (the default) means record until
             // stopped or interrupted (battery/storage/thermal/error). Validate like the

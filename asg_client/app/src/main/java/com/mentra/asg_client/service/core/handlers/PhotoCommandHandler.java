@@ -244,8 +244,8 @@ public class PhotoCommandHandler extends BaseMediaCommandHandler {
                 captureSettings =
                         PhotoCaptureSettings.mergeForSdkRequest(captureSettings, asgSettings);
             }
-            String compress = resolvePhotoCompress(data, asgSettings);\
-            boolean flash = true;
+            String compress = resolvePhotoCompress(data, asgSettings);
+            boolean flash = data.optBoolean("flash", true);
             boolean sound = resolvePhotoSound(data, asgSettings);
             PhotoCaptureSettings.logMergeDiagnostics(
                     requestCaptureSettings, captureSettings, asgSettings, requestId);

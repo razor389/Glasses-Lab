@@ -87,4 +87,26 @@ class UnifiedRecordingProfileTest {
         assertEquals(mapOf("type" to "get_video_recording_status", "requestId" to "known-session"),
             RecordingProfileCommand.statusFields("known-session"))
     }
+
+    @Test fun externalLedSurvivesSerializationAndStatusRecovery() {
+        val disabled = profile.copy(enableFlash = false)
+        assertEquals(false, disabled.values()["flash"])
+        assertEquals(disabled, UnifiedRecordingProfile.fromMap(disabled.values()))
+        assertEquals(disabled, VideoRecordingStatusEvent(mapOf("profile" to disabled.values())).profile)
+        assertTrue(UnifiedRecordingProfile.fromMap(disabled.values() - "flash")!!.enableFlash)
+        for (invalid in listOf("false", 0)) {
+            assertNull(UnifiedRecordingProfile.fromMap(disabled.values() + ("flash" to invalid)))
+        }
+    }
+    @Test fun ordinaryFlashOverridesAreTopLevelAndProfileStartsRejectThem() {
+        for (flash in listOf(false, true)) {
+            val ordinary = VideoRecordingRequest("capture", true, true, enableFlash = flash)
+            assertEquals(flash, VideoRecordingCommand.fields(ordinary)["flash"])
+            assertThrows(IllegalArgumentException::class.java) {
+                VideoRecordingCommand.fields(ordinary.copy(useRecordingProfile = true, profileRevision = "revision"))
+            }
+        }
+        val canonical = VideoRecordingRequest("capture", true, true, useRecordingProfile = true, profileRevision = "revision")
+        assertFalse(VideoRecordingCommand.fields(canonical).containsKey("flash"))
+    }
 }

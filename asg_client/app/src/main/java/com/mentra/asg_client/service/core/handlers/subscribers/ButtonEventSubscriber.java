@@ -154,7 +154,7 @@ public final class ButtonEventSubscriber implements IPeripheralBus.McuEventListe
             return;
         }
 
-        // Capture light is mandatory for privacy.
+        // Legacy button video keeps its external LED enabled; profile starts use their snapshot.
         boolean ledEnabled = true;
 
         // Get current battery level (with null check)
@@ -212,10 +212,14 @@ public final class ButtonEventSubscriber implements IPeripheralBus.McuEventListe
                 Log.d(TAG, "⏹️ Stopping video recording (short press during recording)");
                 captureService.stopVideoRecording();
             } else {
-                Log.d(TAG, "📸 Taking photo locally (short press) with LED: " + ledEnabled);
-                // Get saved photo size for button press
-                String photoSize = serviceManager.getAsgSettings().getButtonPhotoSize();
-                captureService.takePhotoLocally(photoSize, ledEnabled, true);
+                String photoSize;
+                boolean photoFlash;
+                synchronized (serviceManager.getAsgSettings()) {
+                    photoSize = serviceManager.getAsgSettings().getButtonPhotoSize();
+                    photoFlash = serviceManager.getAsgSettings().getButtonPhotoFlash();
+                }
+                Log.d(TAG, "📸 Taking photo locally (short press) with external LED: " + photoFlash);
+                captureService.takePhotoLocally(photoSize, photoFlash, true);
             }
         }
     }

@@ -76,6 +76,8 @@ data class PhotoCaptureDefaults(
     val compress: String? = null,
     val sound: Boolean? = null,
     val resetCaptureTuning: Boolean = false,
+    /** External capture LED only; null preserves the glasses' saved default. */
+    val enableFlash: Boolean? = null,
 )
 
 data class VideoRecordingDefaults(
@@ -221,6 +223,8 @@ data class PhotoRequest @JvmOverloads constructor(
     val transferMethod: String = "auto",
     /** LOCAL requires ordinary photo mode, save=true, and no upload destination. */
     val qualityProfile: PhotoQualityProfile = PhotoQualityProfile.DEFAULT,
+    /** Controls the external capture LED; the internal indicator remains enabled. */
+    val enableFlash: Boolean = true,
 ) {
     init {
         require(qualityProfile != PhotoQualityProfile.LOCAL ||
@@ -277,6 +281,12 @@ data class PhotoRequest @JvmOverloads constructor(
                 compress = PhotoCompression.fromValue(stringValue(values, "compress") ?: "none"),
                 save = boolValue(values, "save", "saveToGallery") ?: false,
                 sound = boolValue(values, "sound") ?: true,
+                enableFlash = if (values.containsKey("flash")) {
+                    values["flash"] as? Boolean
+                        ?: error("flash must be a boolean")
+                } else {
+                    true
+                },
                 mode = PhotoMode.fromValue(stringValue(values, "mode")),
                 transferMethod = transferMethodFromValue(values["transferMethod"]),
                 qualityProfile = PhotoQualityProfile.fromValue(values["qualityProfile"]),
@@ -392,6 +402,8 @@ data class VideoRecordingRequest(
     // Consume the same persisted atomic profile used by the physical camera button.
     val useRecordingProfile: Boolean = false,
     val profileRevision: String? = null,
+    /** External LED override for ordinary requests; profile starts must leave this null. */
+    val enableFlash: Boolean? = null,
 )
 
 data class VideoRecordingStatusEvent(

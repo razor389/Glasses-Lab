@@ -447,7 +447,8 @@ class RecordingController(
   fun onVideoStatus(event: VideoRecordingStatusEvent) {
     val id = event.requestId
     val eventProfile = event.profile?.let {
-      runCatching { VideoRecordingProfile(it.width, it.height, it.fps, it.maxRecordingTimeMinutes, it.mode == "phone") }.getOrNull()
+      runCatching { VideoRecordingProfile(it.width, it.height, it.fps, it.maxRecordingTimeMinutes,
+        it.mode == "phone", enableFlash = it.enableFlash) }.getOrNull()
     }
     val started = event.success && (event.status == "recording_started" || event.recording == true)
     val terminal = event.recording != true && (event.status == "recording_stopped" || (event.status == "error" && event.segmentCount != null))

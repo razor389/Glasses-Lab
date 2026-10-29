@@ -19,7 +19,7 @@ import org.robolectric.annotation.Config
 class CaptureDefaultsCacheTest {
     private val category = ObservableStore.BLUETOOTH_CATEGORY
     private val keys = listOf("button_video_settings", "button_video_width", "button_video_height", "button_video_fps",
-        "button_max_recording_time", "button_photo_size", "button_photo_mfnr", "camera_fov", "recording_profile")
+        "button_max_recording_time", "button_photo_size", "button_photo_flash", "button_photo_mfnr", "camera_fov", "recording_profile")
     private lateinit var before: Map<String, Any?>
 
     @Before
@@ -62,10 +62,19 @@ class CaptureDefaultsCacheTest {
 
     @Test
     fun `unified reconnect profile remains one snapshot despite stale legacy cache writes`() {
-        val profile = UnifiedRecordingProfile("saved-revision", 1280, 720, 5, 120, "phone")
+        val profile = UnifiedRecordingProfile("saved-revision", 1280, 720, 5, 120, "phone", enableFlash = false)
         CaptureDefaultsCache.recordingProfile(profile)
         CaptureDefaultsCache.video(VideoRecordingDefaults(1920, 1080, 30), 3)
         assertThat(CaptureDefaultsCache.recordingProfile()).isEqualTo(profile)
         assertThat(DeviceStore.get(category, "recording_profile")).isEqualTo(profile.values())
+    }
+
+    @Test fun photoDefaultsRetainDisabledFlashAcrossSizeOnlyUpdates() {
+        CaptureDefaultsCache.photoDefaults(PhotoSize.HIGH, false)
+        CaptureDefaultsCache.photoSize(PhotoSize.LOW)
+        assertThat(DeviceStore.get(category, "button_photo_size")).isEqualTo("low")
+        assertThat(DeviceStore.get(category, "button_photo_flash")).isEqualTo(false)
+        CaptureDefaultsCache.photoDefaults(PhotoSize.MAX, true)
+        assertThat(DeviceStore.get(category, "button_photo_flash")).isEqualTo(true)
     }
 }

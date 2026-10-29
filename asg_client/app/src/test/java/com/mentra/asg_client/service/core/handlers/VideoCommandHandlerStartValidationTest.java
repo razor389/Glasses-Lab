@@ -106,4 +106,11 @@ public class VideoCommandHandlerStartValidationTest {
                         anyBoolean(),
                         eq(5));
     }
+
+    @Test public void ordinaryVideoHonorsExternalFlashAndDefaultsOn() throws Exception {
+        assertThat(handler.handleCommand("start_video_recording", startData(5).put("flash", false))).isTrue();
+        verify(captureService).handleStartVideoCommand(eq("req-1"), anyBoolean(), isNull(), eq(false), anyBoolean(), eq(5));
+        assertThat(handler.handleCommand("start_video_recording", startData(5))).isTrue();
+        verify(captureService).handleStartVideoCommand(eq("req-1"), anyBoolean(), isNull(), eq(true), anyBoolean(), eq(5));
+    }
 }

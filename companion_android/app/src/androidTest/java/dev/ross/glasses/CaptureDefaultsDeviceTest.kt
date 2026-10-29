@@ -43,8 +43,8 @@ class CaptureDefaultsDeviceTest {
     settings.save(policy)
     settings.setKeepMediaWifiReady(false)
     val photo = settings.savePhotoDefaults(PhotoCaptureProfile(PhotoSize.MAX))
-    val video = settings.saveVideoDefaults(VideoRecordingProfile(1920, 1080, 15, 20))
-    val updatedPhoto = settings.savePhotoDefaults(PhotoCaptureProfile(PhotoSize.LOW))
+    val video = settings.saveVideoDefaults(VideoRecordingProfile(1920, 1080, 15, 20, enableFlash = false))
+    val updatedPhoto = settings.savePhotoDefaults(PhotoCaptureProfile(PhotoSize.LOW, enableFlash = false))
 
     val restored = RecordingSettings(context, repository)
     assertEquals(1L, photo.revision)

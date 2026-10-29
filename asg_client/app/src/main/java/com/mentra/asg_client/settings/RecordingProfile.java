@@ -15,9 +15,32 @@ public final class RecordingProfile {
     public final String mode;
     public final long segmentMaxBytes;
     public final long maxBacklogBytes;
+    /** External capture LED only; the inward capture indicator remains enabled. */
+    public final boolean enableFlash;
+
+    public RecordingProfile(
+        String revision,
+        int width,
+        int height,
+        int fps,
+        int minutes,
+        String mode,
+        long segmentMaxBytes,
+        long maxBacklogBytes) {
+        this(
+                revision,
+                width,
+                height,
+                fps,
+                minutes,
+                mode,
+                segmentMaxBytes,
+                maxBacklogBytes,
+                true);
+    }
 
     public RecordingProfile(String revision, int width, int height, int fps, int minutes,
-            String mode, long segmentMaxBytes, long maxBacklogBytes) {
+            String mode, long segmentMaxBytes, long maxBacklogBytes, boolean enableFlash) {
         if (revision == null || revision.isEmpty() || revision.getBytes(StandardCharsets.UTF_8).length > 128
                 || !((width == 1920 && height == 1080) || (width == 1280 && height == 720))
                 || !(fps == 5 || fps == 15 || fps == 30) || !isDurationAllowed(minutes)
@@ -33,14 +56,21 @@ public final class RecordingProfile {
         this.mode = mode;
         this.segmentMaxBytes = segmentMaxBytes;
         this.maxBacklogBytes = maxBacklogBytes;
+        this.enableFlash = enableFlash;
     }
 
     public boolean offloadsToPhone() { return "phone".equals(mode); }
 
     public boolean sameValues(RecordingProfile other) {
-        return revision.equals(other.revision) && width == other.width && height == other.height
-                && fps == other.fps && maxRecordingTimeMinutes == other.maxRecordingTimeMinutes
-                && mode.equals(other.mode) && segmentMaxBytes == other.segmentMaxBytes && maxBacklogBytes == other.maxBacklogBytes;
+        return revision.equals(other.revision)
+                && width == other.width
+                && height == other.height
+                && fps == other.fps
+                && maxRecordingTimeMinutes == other.maxRecordingTimeMinutes
+                && mode.equals(other.mode)
+                && segmentMaxBytes == other.segmentMaxBytes
+                && maxBacklogBytes == other.maxBacklogBytes
+                && enableFlash == other.enableFlash;
     }
 
     public static boolean isDurationAllowed(int minutes) {
@@ -56,25 +86,67 @@ public final class RecordingProfile {
                 throw new IllegalArgumentException(key + " is out of range");
             }
         }
-        return new RecordingProfile(json.getString("revision"), json.getInt("width"),
-                json.getInt("height"), json.getInt("fps"), json.getInt("maxRecordingTimeMinutes"),
-                json.getString("mode"), json.optLong("segmentMaxBytes", AsgConstants.VIDEO_SEGMENT_DEFAULT_BYTES),
-                json.optLong("maxBacklogBytes", AsgConstants.VIDEO_SEGMENT_DEFAULT_BACKLOG_BYTES));
+        boolean enableFlash = true;
+        if (json.has("flash")) {
+            Object value = json.get("flash");
+            if (!(value instanceof Boolean)) {
+                throw new IllegalArgumentException("flash must be a boolean");
+            }
+            enableFlash = (Boolean) value;
+        }
+        return new RecordingProfile(
+            json.getString("revision"),
+            json.getInt("width"),
+            json.getInt("height"),
+            json.getInt("fps"),
+            json.getInt("maxRecordingTimeMinutes"),
+            json.getString("mode"),
+            json.optLong(
+                    "segmentMaxBytes",
+                    AsgConstants.VIDEO_SEGMENT_DEFAULT_BYTES),
+            json.optLong(
+                    "maxBacklogBytes",
+                    AsgConstants.VIDEO_SEGMENT_DEFAULT_BACKLOG_BYTES),
+            enableFlash);
+
     }
 
     public JSONObject toJson() throws JSONException {
-        return new JSONObject().put("revision", revision).put("width", width).put("height", height)
-                .put("fps", fps).put("maxRecordingTimeMinutes", maxRecordingTimeMinutes).put("mode", mode)
-                .put("segmentMaxBytes", segmentMaxBytes).put("maxBacklogBytes", maxBacklogBytes);
+        return new JSONObject()
+                .put("revision", revision)
+                .put("width", width)
+                .put("height", height)
+                .put("fps", fps)
+                .put("maxRecordingTimeMinutes", maxRecordingTimeMinutes)
+                .put("mode", mode)
+                .put("segmentMaxBytes", segmentMaxBytes)
+                .put("maxBacklogBytes", maxBacklogBytes)
+                .put("flash", enableFlash);
     }
 
     public RecordingProfile withVideo(VideoSettings settings) {
-        return new RecordingProfile(java.util.UUID.randomUUID().toString(), settings.width, settings.height,
-                settings.fps, maxRecordingTimeMinutes, mode, segmentMaxBytes, maxBacklogBytes);
+        return new RecordingProfile(
+                java.util.UUID.randomUUID().toString(),
+                settings.width,
+                settings.height,
+                settings.fps,
+                maxRecordingTimeMinutes,
+                mode,
+                segmentMaxBytes,
+                maxBacklogBytes,
+                enableFlash);
     }
 
     public RecordingProfile withDuration(int minutes) {
-        return new RecordingProfile(java.util.UUID.randomUUID().toString(), width, height, fps,
-                minutes, mode, segmentMaxBytes, maxBacklogBytes);
+        return new RecordingProfile(
+                java.util.UUID.randomUUID().toString(),
+                width,
+                height,
+                fps,
+                minutes,
+                mode,
+                segmentMaxBytes,
+                maxBacklogBytes,
+                enableFlash);
     }
 }

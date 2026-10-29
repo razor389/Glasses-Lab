@@ -39,6 +39,9 @@ public class AsgConstants {
 
     /** Version of the opt-in local photo size/JPEG quality contract acknowledged to phones. */
     public static final int LOCAL_PHOTO_QUALITY_VERSION = 1;
+
+    /** Saved external LED preference for button photos; the inward indicator is independent. */
+    public static final String BUTTON_PHOTO_FLASH_KEY = "button_photo_flash";
     /** Omitted/default requests retain the historical quality policy for their origin. */
     public static final String PHOTO_QUALITY_PROFILE_DEFAULT = "default";
     /** Local archival photos use the same size targets and JPEG quality as button photos. */

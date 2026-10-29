@@ -7,7 +7,6 @@ import android.util.Log;
 import com.mentra.asg_client.AsgConstants;
 import com.mentra.asg_client.camera.policy.PhotoSizeTier;
 
-import java.util.Arrays;
 
 /**
  * Settings manager for ASG Client
@@ -261,7 +260,7 @@ public class AsgSettings {
      * Get the photo size setting for button-initiated photos
      * @return Photo size ("low", "medium", "high", or "max")
      */
-    public String getButtonPhotoSize() {
+    public synchronized String getButtonPhotoSize() {
         String size = prefs.getString(KEY_BUTTON_PHOTO_SIZE, "max");
         size = PhotoSizeTier.normalize(size);
         Log.d(TAG, "Retrieved button photo size: " + size);
@@ -273,14 +272,41 @@ public class AsgSettings {
      * @param size Photo size ("low", "medium", "high", or "max")
      */
     public void setButtonPhotoSize(String size) {
-        size = PhotoSizeTier.normalize(size);
-        if (!Arrays.asList("low", "medium", "high", "max").contains(size)) {
-            Log.w(TAG, "Invalid photo size: " + size + ", using medium");
-            size = "medium";
-        }
-        Log.d(TAG, "Setting button photo size to: " + size);
-        // Using commit() for immediate persistence
-        prefs.edit().putString(KEY_BUTTON_PHOTO_SIZE, size).commit();
+        setButtonPhotoDefaults(PhotoSizeTier.normalize(size), null);
+    }
+
+    /** Whether button photos pulse the external LED; older installations default to enabled. */
+    public synchronized boolean getButtonPhotoFlash() {
+        return prefs.getBoolean(AsgConstants.BUTTON_PHOTO_FLASH_KEY, true);
+    }
+
+    /** Persist the external photo LED preference and report storage failures. */
+    public boolean setButtonPhotoFlash(boolean enabled) {
+        return setButtonPhotoDefaults(null, enabled);
+    }
+
+    /**
+     * Persist photo defaults together. Null fields preserve the saved value; a failed commit
+     * restores the previous in-memory preferences so an ACK cannot claim unpersisted defaults.
+     */
+    public synchronized boolean setButtonPhotoDefaults(String size, Boolean enableFlash) {
+        if (size == null && enableFlash == null) return true;
+        boolean hadSize = prefs.contains(KEY_BUTTON_PHOTO_SIZE);
+        String oldSize = prefs.getString(KEY_BUTTON_PHOTO_SIZE, "max");
+        boolean hadFlash = prefs.contains(AsgConstants.BUTTON_PHOTO_FLASH_KEY);
+        boolean oldFlash = getButtonPhotoFlash();
+        SharedPreferences.Editor editor = prefs.edit();
+        if (size != null) editor.putString(KEY_BUTTON_PHOTO_SIZE, PhotoSizeTier.normalize(size));
+        if (enableFlash != null) editor.putBoolean(AsgConstants.BUTTON_PHOTO_FLASH_KEY, enableFlash);
+        if (editor.commit()) return true;
+
+        SharedPreferences.Editor rollback = prefs.edit();
+        if (hadSize) rollback.putString(KEY_BUTTON_PHOTO_SIZE, oldSize);
+        else rollback.remove(KEY_BUTTON_PHOTO_SIZE);
+        if (hadFlash) rollback.putBoolean(AsgConstants.BUTTON_PHOTO_FLASH_KEY, oldFlash);
+        else rollback.remove(AsgConstants.BUTTON_PHOTO_FLASH_KEY);
+        rollback.commit();
+        return false;
     }
     
     /**
