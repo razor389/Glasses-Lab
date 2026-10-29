@@ -642,6 +642,8 @@ public class AsgClientServiceManager {
                 // Wire active recording provider so sync/download skip in-progress and
                 // not-yet-validated videos
                 if (mediaCaptureService != null) {
+                    cameraServer.setAuxiliaryCleanupGuard(mediaCaptureService,
+                            mediaCaptureService::isBusyForAuxiliaryCleanup);
                     cameraServer.setActiveRecordingProvider(
                             new AsgCameraServer.ActiveRecordingProvider() {
                                 @Override

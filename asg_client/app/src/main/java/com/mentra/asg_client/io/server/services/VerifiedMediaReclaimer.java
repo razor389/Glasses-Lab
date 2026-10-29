@@ -19,6 +19,10 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
+import java.util.function.BooleanSupplier;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Reclaims one exact, verified gallery file. Never deletes a capture tree or an unmatched sibling.
@@ -93,6 +97,31 @@ final class VerifiedMediaReclaimer {
     static final class AuxiliaryStats {
         int files;
         long bytes;
+    }
+
+    static final class AuxiliaryCleanup {
+        final List<Entry> entries;
+        final String id;
+        final long bytes;
+        final int retainedFiles;
+
+        AuxiliaryCleanup(List<Entry> entries, int retainedFiles) throws IOException {
+            this.entries = entries;
+            this.retainedFiles = retainedFiles;
+            long total = 0;
+            try {
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                for (Entry entry : entries) {
+                    total = Math.addExact(total, entry.size);
+                    digest.update((entry.key() + "\n" + entry.generation + "\n"
+                            + GalleryTransferProtocol.sha256(entry.file) + "\n").getBytes(StandardCharsets.UTF_8));
+                }
+                StringBuilder value = new StringBuilder();
+                for (byte b : digest.digest()) value.append(String.format(Locale.ROOT, "%02x", b & 0xff));
+                id = value.toString();
+            } catch (NoSuchAlgorithmException impossible) { throw new IOException(impossible); }
+            bytes = total;
+        }
     }
 
     /** Stale generations, active writers, and digest mismatches are retryable conflicts, never deletes. */
@@ -216,6 +245,84 @@ final class VerifiedMediaReclaimer {
     static boolean isThumbnail(String name) {
         return name != null && name.startsWith("VID_") && name.contains("/")
                 && new File(name).getName().equalsIgnoreCase(AsgConstants.VIDEO_THUMBNAIL_SIDECAR_NAME);
+    }
+
+    /** Explicit user cleanup applies only to known extras of already-reclaimed captures. */
+    synchronized AuxiliaryCleanup previewAuxiliaryCleanup(BooleanSupplier busy) throws IOException {
+        requireCleanupIdle(busy);
+        Set<String> completed = new HashSet<>();
+        Set<String> pending = new HashSet<>();
+        for (File journal : children(journals)) {
+            if (!journal.getName().endsWith(".properties")) continue;
+            Properties values = new Properties();
+            try (FileInputStream input = new FileInputStream(child(journals, journal.getName()))) {
+                values.load(input);
+            }
+            String name = values.getProperty("file", "");
+            String location = values.getProperty("location", "");
+            if (!name.matches("(?:IMG|VID)_[A-Za-z0-9_.-]+/base\\.(?:jpg|mp4)")
+                    || !("live".equals(location) || "trash".equals(location))) continue;
+            String capture = name.substring(0, name.indexOf('/'));
+            String key = location + ":" + capture;
+            if ("complete".equals(values.getProperty("state"))) completed.add(key);
+            else pending.add(key);
+        }
+        completed.removeAll(pending);
+        List<Entry> entries = new ArrayList<>();
+        for (String key : completed) {
+            int split = key.indexOf(':');
+            String location = key.substring(0, split);
+            String capture = key.substring(split + 1);
+            File directory = child("live".equals(location) ? root : trash, capture);
+            if (!directory.isDirectory() || blocked.test(capture + "/base.jpg")
+                    || blocked.test(capture + "/base.mp4")) continue;
+            List<Entry> candidates = new ArrayList<>();
+            boolean eligible = true;
+            // Any primary, partial, pending marker, RAW, or unknown member retains this capture.
+            for (File file : children(directory)) {
+                String leaf = file.getName();
+                if ("trash".equals(location) && (".flat_layout".equals(leaf) || ".ack_ids".equals(leaf))) continue;
+                if (!file.isFile() || !("imu.json".equals(leaf)
+                        || (capture.startsWith("VID_") && AsgConstants.VIDEO_THUMBNAIL_SIDECAR_NAME.equals(leaf)))) {
+                    eligible = false;
+                    break;
+                }
+                File checked = child(directory, leaf);
+                if (clock.getAsLong() - checked.lastModified() < AsgConstants.LAB_SYNC_SETTLE_MS) {
+                    eligible = false;
+                    break;
+                }
+                candidates.add(new Entry(capture + "/" + leaf, location, checked));
+            }
+            if (eligible) entries.addAll(candidates);
+        }
+        entries.sort(Comparator.comparing(Entry::key));
+        AuxiliaryCleanup preview = new AuxiliaryCleanup(entries, retainedAuxiliaries().files - entries.size());
+        requireCleanupIdle(busy);
+        return preview;
+    }
+
+    /** Delete only the previewed set; a changed preview requires fresh user confirmation. */
+    synchronized AuxiliaryCleanup purgeAuxiliaries(String previewId, BooleanSupplier busy) throws IOException {
+        if (previewId == null || !previewId.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("Invalid auxiliary cleanup preview");
+        }
+        AuxiliaryCleanup preview = previewAuxiliaryCleanup(busy);
+        if (!preview.id.equals(previewId)) throw new Conflict("Auxiliary files changed; review cleanup again");
+        for (Entry entry : preview.entries) {
+            requireCleanupIdle(busy);
+            if (blocked.test(entry.name)) throw new Conflict("Capture became busy; review cleanup again");
+            File source = resolve(entry.name, entry.location);
+            requireGeneration(source, entry.name, entry.size, entry.generation);
+            if (!source.delete()) throw new IOException("Auxiliary cleanup interrupted; review remaining files");
+            directorySync.sync(source.getParentFile());
+            cleanupEmptyParent(source.getParentFile());
+        }
+        return preview;
+    }
+
+    private static void requireCleanupIdle(BooleanSupplier busy) throws Conflict {
+        if (busy.getAsBoolean()) throw new Conflict("Finish captures and transfers before cleaning auxiliary files");
     }
 
     private static void countAuxiliary(AuxiliaryStats total, File parent, String leaf, String logicalName) throws IOException {

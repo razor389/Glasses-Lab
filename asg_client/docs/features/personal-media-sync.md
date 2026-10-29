@@ -72,6 +72,8 @@ Success responses use `{"status":"success","data":{...}}`; error responses use
 | `GET /api/lab/v1/hash?file=...&location=live` | Computes a fresh SHA-256 and rechecks generation/active state before returning it. |
 | `GET /api/lab/v1/file?file=...&location=live` | Downloads that exact logical file. Supports `Range`, `If-Range`, and `If-Match`; generation changes produce HTTP 412 with `If-Match`. |
 | `POST /api/lab/v1/receipt` | Reclaims one matching, verified source. Requires the complete receipt below. |
+| `GET /api/lab/v1/auxiliary-cleanup` | Previews eligible IMU JSON and video thumbnails from already-reclaimed captures; requires idle capture state. |
+| `POST /api/lab/v1/auxiliary-cleanup` | Explicit user purge using `{ "confirm": true, "cleanup_id": "<preview digest>" }`; rechecks idle state and the exact preview. |
 | `POST /api/lab/v1/lease` | Authenticated JSON `{ "ttl_seconds": 180 }` grants/renews an idle lease; integers 0–180 are accepted and zero revokes it. |
 
 Lease responses contain `api_version: 1` and `expires_in_seconds`. Lease traffic
@@ -103,7 +105,7 @@ on the next sync pass so new captures are discovered.
 
 Generated `VID_.../thumb.jpg` entries have role `thumbnail`. The companion must
 not publish them as ordinary camera photos or send a media receipt for them;
-they remain until an explicit derived-file cleanup policy is implemented.
+automatic sync retains them. They can be removed by the explicit auxiliary cleanup action.
 
 Paths remain gallery-relative, for example `VID_123/base.mp4` or `IMG_123.jpg`.
 The location is a fixed enum, not a filesystem path. Partial files, hidden
@@ -185,9 +187,21 @@ are counted in `recovery_pending`, which the companion must show as a recovery
 problem. Quarantine is never renamed over the original pathname, where a new
 capture may now exist. Retained receipt metadata makes duplicate requests safe.
 
-Media receipts do not authorize deletion of IMU JSON, RAW/DNG files, or other
-non-media sidecars. Such files remain until an explicit verified archival policy
-is implemented. Personal-fork startup cleanup removes only truly empty capture
+Media receipts alone do not authorize deletion of IMU JSON, RAW/DNG files, or other
+non-media sidecars. The separate user-confirmed auxiliary cleanup endpoint can delete
+`imu.json` and video `thumb.jpg` only in capture directories whose primary `base.jpg`
+or `base.mp4` has a completed receipt and no longer exists. Any unknown member, RAW,
+partial, pending marker, active writer, or unsettled file protects the entire directory.
+The endpoint never deletes receipts or recovery payloads. Preview/commit responses contain
+`api_version: 1`, `cleanup_id`, `files`, `bytes`, `retained_files`, and `deleted`.
+The digest covers sorted paths, locations, generations, and content hashes. A changed
+preview or busy capture returns HTTP 409; older builds return 404. An interrupted purge
+may have removed some extras; fetch another preview instead of replaying blindly.
+The companion disables cleanup during photo/audio/video activity, calls, and transfers,
+and blocks new app captures/transfers while the request runs. ASG additionally shares
+video admission's monitor and holds the photo-persistence barrier through cleanup.
+The action permanently discards the selected extras without archiving them.
+Personal-fork startup cleanup removes only truly empty capture
 directories; nonempty sidecar-only, partial, corrupt-media, and pending-marker
 captures survive restarts. Stock startup orphan cleanup is unchanged.
 A phone storage limit or failed publication must never generate

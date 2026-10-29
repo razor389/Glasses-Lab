@@ -418,6 +418,51 @@ public class LabGalleryApiTest {
         assertTrue(json(server.handleRequest(postReceipt(token, receipt))).getJSONObject("data").getBoolean("already_reclaimed"));
     }
 
+    @Test public void auxiliaryCleanupRequiresForkAuthorizationIdleStateAndExplicitMatchingConfirmation() throws Exception {
+        File root = temporary.newFolder();
+        File primary = write(root, "VID_done/base.mp4", "video");
+        File imu = write(root, "VID_done/imu.json", "samples");
+        AsgCameraServer server = server(AsgConstants.PERSONAL_ASG_PACKAGE, root);
+        String path = "/api/lab/v1/auxiliary-cleanup";
+        String token = "a".repeat(64);
+        server.configureLabSync(token, () -> true, () -> "ssid:password");
+        assertEquals(401, server.handleRequest(request(path, null, null)).getStatus().getRequestStatus());
+        assertEquals(404, server("com.mentra.asg_client", root)
+                .handleRequest(request(path, token, null)).getStatus().getRequestStatus());
+        assertEquals(409, server.handleRequest(request(path, token, null)).getStatus().getRequestStatus());
+        server.setAuxiliaryCleanupGuard(new Object(), () -> false);
+        JSONObject receipt = new JSONObject().put("receipt_id", "aux-primary").put("file", "VID_done/base.mp4")
+                .put("location", "live").put("size", primary.length())
+                .put("generation", GalleryTransferProtocol.createEtag("VID_done/base.mp4", primary.length(), primary.lastModified()))
+                .put("sha256", GalleryTransferProtocol.sha256(primary));
+        assertEquals(200, server.handleRequest(postReceipt(token, receipt)).getStatus().getRequestStatus());
+        JSONObject preview = json(server.handleRequest(request(path, token, null))).getJSONObject("data");
+        assertEquals(1, preview.getInt("files"));
+        assertFalse(preview.getBoolean("deleted"));
+        JSONObject confirmation = new JSONObject().put("cleanup_id", preview.getString("cleanup_id"));
+        assertEquals(400, server.handleRequest(postJson(path, token, confirmation)).getStatus().getRequestStatus());
+        confirmation.put("confirm", "true");
+        assertEquals(400, server.handleRequest(postJson(path, token, confirmation)).getStatus().getRequestStatus());
+        confirmation.put("confirm", true);
+        server.setAuxiliaryCleanupGuard(new Object(), () -> true);
+        assertEquals(409, server.handleRequest(postJson(path, token, confirmation)).getStatus().getRequestStatus());
+        server.setAuxiliaryCleanupGuard(new Object(), () -> false);
+        try (PhotoPersistenceRegistry.Lease lease = PhotoPersistenceRegistry.begin(new File(root, "IMG_active/base.jpg").getPath())) {
+            assertEquals(409, server.handleRequest(postJson(path, token, confirmation)).getStatus().getRequestStatus());
+            lease.complete();
+        }
+        assertTrue(imu.isFile());
+        write(root, "VID_done/thumb.jpg", "new preview");
+        assertEquals(409, server.handleRequest(postJson(path, token, confirmation)).getStatus().getRequestStatus());
+        preview = json(server.handleRequest(request(path, token, null))).getJSONObject("data");
+        confirmation.put("cleanup_id", preview.getString("cleanup_id"));
+        JSONObject result = json(server.handleRequest(postJson(path, token, confirmation))).getJSONObject("data");
+        assertTrue(result.getBoolean("deleted"));
+        assertEquals(2, result.getInt("files"));
+        assertFalse(imu.exists());
+        assertTrue(new File(root, "_gallery_metadata/verified_receipts/aux-primary.properties").exists());
+    }
+
     private AsgCameraServer server(String packageName, File directory) {
         Context context = mock(Context.class);
         when(context.getPackageName()).thenReturn(packageName);

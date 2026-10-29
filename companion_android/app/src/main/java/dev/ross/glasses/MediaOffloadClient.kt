@@ -45,6 +45,32 @@ class MediaOffloadClient(
 
   fun supportsSegmentedRecording(): Boolean = page(null).segmentedRecordingVersion == 1
 
+  fun auxiliaryCleanup(preview: AuxiliaryCleanupSummary? = null): AuxiliaryCleanupSummary {
+    val connection = open("auxiliary-cleanup")
+    try {
+      if (preview != null) {
+        connection.requestMethod = "POST"
+        connection.doOutput = true
+        connection.setRequestProperty("Content-Type", "application/json")
+        val body = JsonObject().apply { addProperty("confirm", true); addProperty("cleanup_id", preview.id) }
+        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+      }
+      check(connection.responseCode == 200) {
+        when (connection.responseCode) {
+          404 -> "Update the glasses build to clean auxiliary files."
+          409 -> "The glasses are busy or the files changed. Wait for captures to finish, then check again."
+          401 -> "Reconnect media Wi-Fi before cleaning auxiliary files."
+          else -> "Cleanup was not confirmed. Check remaining files before trying again."
+        }
+      }
+      val result = connection.inputStream.bufferedReader().use { AuxiliaryCleanupSummary.parse(VideoGallery.read(it), preview != null) }
+      if (preview != null) check(result.id == preview.id && result.files == preview.files && result.bytes == preview.bytes) {
+        "Cleanup response did not match your confirmation. Check remaining files."
+      }
+      return result
+    } finally { connection.disconnect() }
+  }
+
   /** Same-ID renewal is idempotent; a consumed reservation can never authorize another start. */
   fun recordingReady(grant: PhoneRecordingGrant, ttlSeconds: Int) {
     val connection = open("recording-ready")

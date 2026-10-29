@@ -69,6 +69,12 @@ class GlassesController(
   val canRecord: Boolean get() = canCapture
   val canTakePhoto: Boolean get() = canCapture && defaults.photoApplied
   val canStartVideo: Boolean get() = canCapture && defaults.videoApplied
+  val canCleanAuxiliaries: Boolean get() = canCapture && recordings.mediaWifiReady
+
+  suspend fun cleanAuxiliaryFiles(preview: AuxiliaryCleanupSummary? = null): AuxiliaryCleanupSummary {
+    check(canCleanAuxiliaries) { "Connect media Wi-Fi and finish captures or transfers before cleanup." }
+    return recordings.cleanAuxiliaryFiles(preview) { capturing || testingAudio }
+  }
   val savedDeviceName: String? get() = preferences.getString("name", null)
   val savedDeviceAddress: String? get() = preferences.getString("address", null)
 

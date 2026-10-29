@@ -11,6 +11,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.mentra.asg_client.AsgConstants;
+import com.mentra.asg_client.camera.model.QueuedPhotoRequestQueue;
 import com.mentra.asg_client.audio.AudioAssets;
 import com.mentra.asg_client.camera.CameraNeoService;
 import com.mentra.asg_client.camera.feedback.PhotoFeedbackController;
@@ -1137,7 +1138,7 @@ public class MediaCaptureService {
      * @param settings Video settings (resolution, fps) or null for defaults
      * @param maxRecordingTimeMinutes Maximum recording time in minutes (0 = no limit)
      */
-    public void handleStartVideoCommand(
+    public synchronized void handleStartVideoCommand(
             String requestId,
             boolean save,
             VideoSettings settings,
@@ -1281,7 +1282,7 @@ public class MediaCaptureService {
     }
 
     /** Start video recording with specific parameters, settings, and max time */
-    private void startVideoRecording(
+    private synchronized void startVideoRecording(
             String videoFilePath,
             String requestId,
             VideoSettings settings,
@@ -2018,6 +2019,15 @@ public class MediaCaptureService {
     /** Includes startup and final validation, so a physical press cannot race a second start. */
     public boolean isVideoRecordingActiveOrStarting() {
         return isRecordingVideo || currentVideoId != null || activeProfileStatus != null;
+    }
+
+    /** Cleanup also waits for queued photos and post-recording validation to finish. */
+    public boolean isBusyForAuxiliaryCleanup() {
+        return isVideoRecordingActiveOrStarting() || CameraNeoService.isCameraInUse()
+                || QueuedPhotoRequestQueue.getInstance().size() > 0
+                || !getPendingVideoIntegrityCaptureIds().isEmpty()
+                || RtmpStreamingService.isStreaming() || SrtStreamingService.isStreaming()
+                || WhipStreamingService.isStreaming();
     }
 
     private synchronized void reserveRecordingProfile(String sessionId, VideoSettings settings) {

@@ -135,6 +135,11 @@ public final class PhotoPersistenceRegistry {
         return false;
     }
 
+    /** Includes exposure reservations and deferred metadata writers, not just open camera sessions. */
+    public static synchronized boolean hasActiveCaptures() {
+        return !active.isEmpty();
+    }
+
     /** Checks durable incomplete-write state after process restart; errors fail closed. */
     public static boolean hasPendingWrite(File mediaFile) {
         try { return marker(mediaFile.getCanonicalFile()).exists(); }

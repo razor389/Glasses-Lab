@@ -70,6 +70,10 @@ class RecordingController(
     private set
   var publishing = false
     private set
+  var cleaningAuxiliaries = false
+    private set
+  var auxiliaryCleanupMessage = "Remove motion data and thumbnails from captures already saved to your phone."
+    private set
   var syncMessage = "Completed captures save to phone media automatically."
     private set
   private var startedAt = 0L
@@ -96,9 +100,9 @@ class RecordingController(
     preferences.getInt("video_segments:$id", -1) < 0)
     "Final segment count is unknown after interruption. Sync can save completed parts; completion needs review."
   else "Waiting for verified phone copies."
-  val busy get() = !session.idle || startJob?.isActive == true || downloading || publishing || !recovered
+  val busy get() = !session.idle || startJob?.isActive == true || downloading || publishing || cleaningAuxiliaries || !recovered
   val paused get() = session.phase in listOf(RecordingSession.Phase.PAUSED, RecordingSession.Phase.WAITING)
-  val needsWakeLock get() = downloading || publishing || (!session.idle && !paused)
+  val needsWakeLock get() = downloading || publishing || cleaningAuxiliaries || (!session.idle && !paused)
   val capturedBytes get() = completedAudioBytes + (audio?.bytes?.get() ?: 0)
   val capturedSeconds get() = capturedBytes / WavWriter.BYTES_PER_SECOND
   val canStop get() = !session.idle && stopJob?.isActive != true &&
@@ -344,6 +348,7 @@ class RecordingController(
 
   /** Called by the service even with the screen off; never opens a new Wi-Fi approval prompt. */
   fun updateRecordingReadiness(profile: VideoRecordingProfile, revision: String, allowed: Boolean) {
+    if (cleaningAuxiliaries) { phoneGrantReadyUntil = 0; return }
     profileReady = allowed
     val now = SystemClock.elapsedRealtime()
     if (glasses().ready && now >= nextStatusAt) {
@@ -577,6 +582,7 @@ class RecordingController(
   }
 
   fun maybeAutomaticTransfers() {
+    if (cleaningAuxiliaries) return
     val activeTransferAllowed = recordingToPhone && session.phase != RecordingSession.Phase.STARTING
     if (!glasses().ready || downloading || publishing || !recovered || (!session.idle && !activeTransferAllowed) ||
       callActive() || SystemClock.elapsedRealtime() < nextSyncAt) return
@@ -607,7 +613,7 @@ class RecordingController(
   fun publishCompletedMedia() {
     if (!recovered) return
     publicationRequested = true
-    if (downloading || publicationJob?.isActive == true) return
+    if (downloading || cleaningAuxiliaries || publicationJob?.isActive == true) return
     publishing = true
     publicationJob = scope.launch {
       try {
@@ -766,6 +772,39 @@ class RecordingController(
   fun downloadVideo(id: String) {
     require(queued.contains(id))
     retryAutomaticTransfers()
+  }
+
+  /** The caller supplies photo state; this controller owns audio/video/transfer admission. */
+  suspend fun cleanAuxiliaryFiles(preview: AuxiliaryCleanupSummary?, otherCaptureActive: () -> Boolean): AuxiliaryCleanupSummary {
+    requireReady()
+    check(!callActive() && !otherCaptureActive()) { "Finish the current capture or call first." }
+    check(mediaWifiReady) { "Connect media Wi-Fi before cleaning auxiliary files." }
+    cleaningAuxiliaries = true
+    auxiliaryCleanupMessage = if (preview == null) "Checking auxiliary files…" else "Cleaning auxiliary files…"
+    changed()
+    try {
+      ensureRunning()
+      val connection = mediaConnection.acquire(allowPrompt = false)
+      check(session.idle && !otherCaptureActive() && !callActive() && glasses().ready) { "A capture or disconnection interrupted cleanup." }
+      val result = withContext(Dispatchers.IO) { offload(connection).auxiliaryCleanup(preview) }
+      val retained = if (result.retainedFiles > 0) " ${result.retainedFiles} files remain protected for captures or recovery." else ""
+      auxiliaryCleanupMessage = if (preview == null) "${result.files} files (${LabUi.size(result.bytes)}) can be cleared.$retained"
+        else "Cleared ${result.files} files (${LabUi.size(result.bytes)}).$retained"
+      if (preview != null) { log(auxiliaryCleanupMessage); syncMessage = auxiliaryCleanupMessage }
+      return result
+    } catch (error: CancellationException) {
+      auxiliaryCleanupMessage = "Cleanup interrupted. Check remaining files before trying again."
+      throw error
+    } catch (error: Exception) {
+      auxiliaryCleanupMessage = error.message ?: "Cleanup was not confirmed. Check remaining files."
+      throw error
+    } finally {
+      cleaningAuxiliaries = false
+      phoneGrantReadyUntil = 0
+      nextGrantAt = 0
+      syncRequested = true
+      changed()
+    }
   }
 
   private fun requireReady() { check(glasses().ready && !busy) { "Connect and stop the current recording or transfer first." } }

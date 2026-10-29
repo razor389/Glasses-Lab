@@ -63,7 +63,7 @@ class CompanionService : Service() {
     val recordings = controller.recordings
     QuickControls.publish(this, controller.glasses.ready && recordings.recovered &&
       !controller.capturing && (!recordings.session.idle || (!recordings.downloading && !recordings.publishing)) &&
-      !controller.audio.callActive && !controller.testingAudio,
+      !controller.audio.callActive && !controller.testingAudio && !recordings.cleaningAuxiliaries,
       recordings.session.kind?.name, !recordings.session.idle, controller.canTakePhoto, controller.canStartVideo)
     val now = SystemClock.elapsedRealtime()
     if (recordings.needsWakeLock || controller.capturing || controller.defaults.applying) {

@@ -80,6 +80,8 @@ public class AsgCameraServer extends AsgServer {
     private java.util.function.Supplier<RecordingProfile> recordingProfileProvider = () -> null;
     private java.util.function.Predicate<RecordingGrant> consumedRecordingGrantProvider = grant -> false;
     private java.util.function.BooleanSupplier recordingBusyProvider = () -> false;
+    private Object auxiliaryCaptureLock = new Object();
+    private java.util.function.BooleanSupplier auxiliaryBusyProvider = () -> true;
     private final Map<String, String> galleryHashCache =
             Collections.synchronizedMap(
                     new LinkedHashMap<String, String>() {
@@ -1357,6 +1359,12 @@ public class AsgCameraServer extends AsgServer {
         consumedRecordingGrantProvider = consumed;
     }
 
+    /** Share video admission's monitor; photo admission is protected by its persistence registry. */
+    public void setAuxiliaryCleanupGuard(Object captureLock, java.util.function.BooleanSupplier busy) {
+        auxiliaryCaptureLock = Objects.requireNonNull(captureLock);
+        auxiliaryBusyProvider = Objects.requireNonNull(busy);
+    }
+
     public RecordingGrant consumeRecordingGrant(String revision, String sessionId) {
         if (!isPersonalFork()) throw new IllegalStateException("phone_not_ready");
         return labSyncSession.consumeRecordingGrant(revision, sessionId);
@@ -1414,7 +1422,9 @@ public class AsgCameraServer extends AsgServer {
         boolean receipt = "/api/lab/v1/receipt".equals(uri);
         boolean lease = "/api/lab/v1/lease".equals(uri);
         boolean recordingReady = "/api/lab/v1/recording-ready".equals(uri);
-        if (session.getMethod() != (receipt || lease || recordingReady ? Method.POST : Method.GET)) {
+        boolean auxiliaryCleanup = "/api/lab/v1/auxiliary-cleanup".equals(uri);
+        if (auxiliaryCleanup ? (session.getMethod() != Method.GET && session.getMethod() != Method.POST)
+                : session.getMethod() != (receipt || lease || recordingReady ? Method.POST : Method.GET)) {
             return createErrorResponse(Response.Status.METHOD_NOT_ALLOWED, "Method is not supported");
         }
         try {
@@ -1477,6 +1487,34 @@ public class AsgCameraServer extends AsgServer {
                 return createSuccessResponse(data);
             }
             VerifiedMediaReclaimer media = verifiedMedia();
+            if (auxiliaryCleanup) {
+                JSONObject body = session.getMethod() == Method.POST ? readJsonBody(session) : null;
+                if (body != null && !Boolean.TRUE.equals(body.opt("confirm"))) {
+                    throw new IllegalArgumentException("Explicit cleanup confirmation required");
+                }
+                // Existing sync takes gallery -> reclaimer -> photo registry. Preserve that order.
+                synchronized (auxiliaryCaptureLock) {
+                    synchronized (galleryTrashManager) {
+                        synchronized (media) {
+                            synchronized (PhotoPersistenceRegistry.class) {
+                                java.util.function.BooleanSupplier busy = () -> auxiliaryBusyProvider.getAsBoolean()
+                                        || PhotoPersistenceRegistry.hasActiveCaptures();
+                                VerifiedMediaReclaimer.AuxiliaryCleanup result = body == null
+                                        ? media.previewAuxiliaryCleanup(busy)
+                                        : media.purgeAuxiliaries(body.getString("cleanup_id"), busy);
+                                Map<String, Object> data = new LinkedHashMap<>();
+                                data.put("api_version", 1);
+                                data.put("cleanup_id", result.id);
+                                data.put("files", result.entries.size());
+                                data.put("bytes", result.bytes);
+                                data.put("retained_files", result.retainedFiles);
+                                data.put("deleted", body != null);
+                                return createSuccessResponse(data);
+                            }
+                        }
+                    }
+                }
+            }
             if (receipt) {
                 JSONObject request = readJsonBody(session);
                 VerifiedMediaReclaimer.Receipt value = new VerifiedMediaReclaimer.Receipt(

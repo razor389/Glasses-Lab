@@ -170,8 +170,13 @@ activity; missed renewals restore normal hotspot idle shutdown. BLE disconnect,
 hotspot stop, token/reservation changes, or ASG restart clear the lease. Generated
 video thumbnails are labeled separately from camera photos, and the local sync
 manifest reports retained live/trash sidecar file counts and bytes even after all
-transferable media has been reclaimed. Sidecars remain until their own verified
-archival policy exists. Personal-fork startup cleanup only removes empty capture
+transferable media has been reclaimed. Glasses Lab Settings offers explicit auxiliary
+cleanup: preview and confirm deletion of IMU JSON and video thumbnails belonging to
+captures already verified and reclaimed by the phone. Cleanup requires idle capture
+and transfer state; the glasses serialize it with video admission and photo persistence.
+Changed previews require fresh confirmation. Unfinished captures, unknown/RAW files,
+receipt journals, and recovery artifacts remain protected. This action does not archive
+the deleted sensor data. Personal-fork startup cleanup only removes empty capture
 directories, preserving nonempty orphan metadata and interrupted camera writes.
 
 ### Audio and microphone

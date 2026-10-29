@@ -19,6 +19,10 @@ Version **0.4.0-dev** implements:
 - A recording-storage allowance, free-space reserve, and recoverable transfer queue.
 - Notification controls, three Quick Settings tiles, and launcher shortcuts.
 - Shared camera/video defaults in Settings, retained through reconnect and app restart.
+- Settings → Glasses storage → Clean auxiliary files previews and confirms removal of
+  motion data and thumbnails from captures already verified on the phone. Requires media
+  Wi-Fi and idle capture/transfer state; protected recovery files remain. Both APKs need
+  the auxiliary-cleanup endpoint/UI update. The action does not back up these extras.
 - Standard Bluetooth media/call status, volume controls, and a quiet test tone.
 
 Phone-media migration and live glasses offload have passed the checks below,

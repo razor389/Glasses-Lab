@@ -27,6 +27,9 @@ class RecordingSettingsActivity : CompanionActivity() {
   private lateinit var budget: EditText
   private lateinit var reserve: EditText
   private lateinit var association: Button
+  private lateinit var auxiliaryCleanupButton: Button
+  private lateinit var auxiliaryCleanupStatus: TextView
+  private var auxiliaryCleanupDialog: AlertDialog? = null
   private val gigabyte = BigDecimal("1000000000")
   private lateinit var photoSize: Spinner
   private lateinit var photoFlash: Switch
@@ -49,7 +52,7 @@ class RecordingSettingsActivity : CompanionActivity() {
   private var draftsInitialized = false
   private var photoSaveError: String? = null
   private var videoSaveError: String? = null
-  private val defaultsObserver: () -> Unit = { refreshDefaults() }
+  private val defaultsObserver: () -> Unit = { refreshDefaults(); refreshAuxiliaryCleanup() }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -131,6 +134,14 @@ class RecordingSettingsActivity : CompanionActivity() {
       startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
     })
     background.addView(LabUi.text(this, "If Samsung interrupts screen-off recording, allow background battery use for Glasses Lab in Android app settings.", 13, LabUi.muted))
+    val cleanup = LabUi.card(this, page)
+    cleanup.addView(LabUi.text(this, "Glasses storage", 20).apply { typeface = Typeface.DEFAULT_BOLD })
+    cleanup.addView(LabUi.text(this, "Clear motion-sensor data and video thumbnails for captures already saved to your phone. Photos and videos are kept. Unfinished captures and recovery files stay protected.", 14, LabUi.muted))
+    auxiliaryCleanupStatus = LabUi.text(this, "Connect media Wi-Fi to check auxiliary files.", 14, LabUi.muted)
+    cleanup.addView(auxiliaryCleanupStatus)
+    auxiliaryCleanupButton = LabUi.button(this, "Clean auxiliary files") { checkAuxiliaryCleanup() }
+    cleanup.addView(auxiliaryCleanupButton)
+    LabUi.enabled(auxiliaryCleanupButton, false)
     val housekeeping = LabUi.disclosure(this, page, "Temporary files").body
     housekeeping.addView(LabUi.text(this, "Sharing a long audio session creates a ZIP copy. You can clear completed export copies without deleting the recordings.", 14, LabUi.muted))
     housekeeping.addView(LabUi.button(this, "Clear temporary export copies") {
@@ -148,6 +159,46 @@ class RecordingSettingsActivity : CompanionActivity() {
           }
         }.show()
     })
+  }
+  private fun refreshAuxiliaryCleanup() {
+    if (!::auxiliaryCleanupButton.isInitialized || !defaultsBound) return
+    val recording = controller.recordings
+    auxiliaryCleanupStatus.text = when {
+      recording.cleaningAuxiliaries -> recording.auxiliaryCleanupMessage
+      !controller.glasses.ready -> "Connect your glasses to clean auxiliary files."
+      !controller.canCapture -> "Finish photos, video/audio recording, calls, and transfers before cleanup."
+      !recording.mediaWifiReady -> "Connect media Wi-Fi to clean auxiliary files."
+      else -> recording.auxiliaryCleanupMessage
+    }
+    LabUi.enabled(auxiliaryCleanupButton, controller.canCleanAuxiliaries)
+    auxiliaryCleanupDialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = controller.canCleanAuxiliaries
+  }
+
+  private fun checkAuxiliaryCleanup() {
+    scope.launch {
+      try {
+        val preview = controller.cleanAuxiliaryFiles()
+        if (preview.files == 0 || !defaultsBound || isFinishing || isDestroyed) return@launch
+        auxiliaryCleanupDialog = AlertDialog.Builder(this@RecordingSettingsActivity)
+          .setTitle("Clean auxiliary files?")
+          .setMessage("Permanently delete ${preview.files} files (${LabUi.size(preview.bytes)}) from the glasses? " +
+            "This removes original motion-sensor data and video thumbnails. The app does not back up these extras. Your saved photos and videos are kept." +
+            if (preview.retainedFiles > 0) "\n\n${preview.retainedFiles} other files will stay protected for captures or recovery." else "")
+          .setNegativeButton("Cancel", null)
+          .setPositiveButton("Delete extras") { _, _ ->
+            scope.launch {
+              try { controller.cleanAuxiliaryFiles(preview) }
+              catch (cancelled: CancellationException) { throw cancelled }
+              catch (error: Exception) { Toast.makeText(this@RecordingSettingsActivity, error.message, Toast.LENGTH_LONG).show() }
+            }
+          }.create().also { dialog ->
+            dialog.setOnDismissListener { auxiliaryCleanupDialog = null }
+            dialog.show()
+            refreshAuxiliaryCleanup()
+          }
+      } catch (cancelled: CancellationException) { throw cancelled }
+      catch (error: Exception) { Toast.makeText(this@RecordingSettingsActivity, error.message, Toast.LENGTH_LONG).show() }
+    }
   }
   private fun addCaptureDefaults(page: LinearLayout, savedState: Bundle?) {
     val camera = LabUi.card(this, page)
@@ -308,9 +359,12 @@ class RecordingSettingsActivity : CompanionActivity() {
       draftsInitialized = true
     }
     refreshDefaults()
+    refreshAuxiliaryCleanup()
     refresh()
   }
   override fun onCompanionUnavailable() {
+    auxiliaryCleanupDialog?.dismiss()
+    if (::auxiliaryCleanupButton.isInitialized) LabUi.enabled(auxiliaryCleanupButton, false)
     if (defaultsBound) controller.unobserve(defaultsObserver)
     defaultsBound = false
   }
@@ -337,5 +391,5 @@ class RecordingSettingsActivity : CompanionActivity() {
       refresh()
     }
   }
-  override fun onDestroy() { scope.cancel(); super.onDestroy() }
+  override fun onDestroy() { auxiliaryCleanupDialog?.dismiss(); scope.cancel(); super.onDestroy() }
 }
