@@ -48,7 +48,11 @@ try {
     $gradleArguments = @(':app:assembleDebug', '--no-daemon', '-PASG_THIRD_PARTY=true', "-PASG_DEBUG_KEYSTORE=$keyFile")
     if ($RunTests) {
         $gradleArguments += ':app:testDebugUnitTest'
-        foreach ($filter in $TestFilter) { $gradleArguments += @('--tests', $filter) }
+        # Gradle runs the full suite without --tests. Do not forward a bare '*':
+        # the Windows Java launcher can expand it into filenames before Gradle sees it.
+        if ($TestFilter -notcontains '*') {
+            foreach ($filter in $TestFilter) { $gradleArguments += @('--tests', $filter) }
+        }
     }
     & ./gradlew.bat @gradleArguments
     if ($LASTEXITCODE -ne 0) { throw 'Development build/checks failed; no device commands were run.' }
