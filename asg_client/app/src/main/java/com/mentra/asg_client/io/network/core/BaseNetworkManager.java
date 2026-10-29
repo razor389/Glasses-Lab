@@ -58,6 +58,7 @@ public abstract class BaseNetworkManager implements INetworkController {
 
     // HTTP activity tracking for auto-disconnect
     private final AtomicLong lastHttpActivityTime = new AtomicLong(0L);
+    private volatile java.util.function.BooleanSupplier labSyncIdleLeaseProvider = () -> false;
     private Handler inactivityCheckHandler;
     private Runnable inactivityCheckRunnable;
 
@@ -945,6 +946,14 @@ public abstract class BaseNetworkManager implements INetworkController {
         Log.d(TAG, "📡 HTTP activity detected, updating timestamp");
     }
 
+    /** Stock hotspot policy is unchanged; only the personal fork can supply an idle lease. */
+    @Override
+    public void setLabSyncIdleLeaseProvider(java.util.function.BooleanSupplier provider) {
+        if (AsgConstants.PERSONAL_ASG_PACKAGE.equals(context.getPackageName())) {
+            labSyncIdleLeaseProvider = provider == null ? () -> false : provider;
+        }
+    }
+
     /** Start monitoring for hotspot inactivity */
     protected final void startInactivityMonitoring() {
         stopInactivityMonitoring(); // Clear any existing monitoring
@@ -961,8 +970,13 @@ public abstract class BaseNetworkManager implements INetworkController {
                         long lastActivity = lastHttpActivityTime.get();
                         long timeSinceLastActivity = currentTime - lastActivity;
 
+                        boolean leased = false;
+                        try { leased = labSyncIdleLeaseProvider.getAsBoolean(); }
+                        catch (RuntimeException error) {
+                            Log.w(TAG, "Local sync idle lease unavailable; retaining normal idle policy");
+                        }
                         if (timeSinceLastActivity
-                                > AsgConstants.HOTSPOT_INACTIVITY_TIMEOUT_MS) {
+                                > AsgConstants.HOTSPOT_INACTIVITY_TIMEOUT_MS && !leased) {
                             Log.i(
                                     TAG,
                                     "🔥 Hotspot inactive for "

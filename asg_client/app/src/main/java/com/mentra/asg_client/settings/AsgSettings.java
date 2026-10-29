@@ -56,10 +56,20 @@ public class AsgSettings {
 
     private final SharedPreferences prefs;
     private final Context context;
+    private volatile RecordingProfile recordingProfile;
+    private volatile boolean recordingProfileInvalid;
     
     public AsgSettings(Context context) {
         this.context = context;
         this.prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String profileJson = prefs.getString(AsgConstants.RECORDING_PROFILE_KEY, null);
+        if (profileJson != null) {
+            try { recordingProfile = RecordingProfile.fromJson(new org.json.JSONObject(profileJson)); }
+            catch (Exception invalid) {
+                recordingProfileInvalid = true;
+                Log.e(TAG, "Stored recording profile is invalid; recording must be reconfigured", invalid);
+            }
+        }
         migrateLegacyZslMfnrPreferences();
         Log.d(TAG, "AsgSettings initialized");
     }
@@ -106,6 +116,8 @@ public class AsgSettings {
      * @return VideoSettings with the saved resolution and fps
      */
     public VideoSettings getButtonVideoSettings() {
+        RecordingProfile profile = getRecordingProfile();
+        if (profile != null) return new VideoSettings(profile.width, profile.height, profile.fps);
         int width = prefs.getInt(KEY_BUTTON_VIDEO_WIDTH, 1920);
         int height = prefs.getInt(KEY_BUTTON_VIDEO_HEIGHT, 1080);
         int fps = prefs.getInt(KEY_BUTTON_VIDEO_FPS, 30);
@@ -118,7 +130,7 @@ public class AsgSettings {
      * Set the video recording settings for button-initiated recording
      * @param settings VideoSettings to save
      */
-    public void setButtonVideoSettings(VideoSettings settings) {
+    public synchronized void setButtonVideoSettings(VideoSettings settings) {
         if (settings == null) {
             Log.w(TAG, "Attempted to set null video settings, ignoring");
             return;
@@ -128,6 +140,10 @@ public class AsgSettings {
             return;
         }
         Log.d(TAG, "Setting button video settings to: " + settings);
+        if (recordingProfile != null) {
+            setRecordingProfile(recordingProfile.withVideo(settings));
+            return;
+        }
         // Using commit() for immediate persistence
         prefs.edit()
             .putInt(KEY_BUTTON_VIDEO_WIDTH, settings.width)
@@ -152,6 +168,8 @@ public class AsgSettings {
      * @return Maximum recording time in minutes (default 10)
      */
     public int getButtonMaxRecordingTimeMinutes() {
+        RecordingProfile profile = getRecordingProfile();
+        if (profile != null) return profile.maxRecordingTimeMinutes;
         int minutes = prefs.getInt(KEY_BUTTON_MAX_RECORDING_TIME_MINUTES, 10);
         Log.d(TAG, "Retrieved button max recording time: " + minutes + " minutes");
         return minutes;
@@ -161,15 +179,82 @@ public class AsgSettings {
      * Set the maximum recording time for button-initiated videos
      * @param minutes Maximum recording time in minutes (3, 5, 10, 15, or 20)
      */
-    public void setButtonMaxRecordingTimeMinutes(int minutes) {
+    public synchronized void setButtonMaxRecordingTimeMinutes(int minutes) {
         // Validate minutes
-        if (minutes != 3 && minutes != 5 && minutes != 10 && minutes != 15 && minutes != 20) {
+        if (!RecordingProfile.isDurationAllowed(minutes)) {
             Log.w(TAG, "Invalid max recording time: " + minutes + " minutes, using 10 minutes");
             minutes = 10;
         }
         Log.d(TAG, "Setting button max recording time to: " + minutes + " minutes");
+        if (recordingProfile != null) {
+            setRecordingProfile(recordingProfile.withDuration(minutes));
+            return;
+        }
         // Using commit() for immediate persistence
         prefs.edit().putInt(KEY_BUTTON_MAX_RECORDING_TIME_MINUTES, minutes).commit();
+    }
+
+    /** A single immutable snapshot prevents mixed settings while another thread applies a profile. */
+    public RecordingProfile getRecordingProfile() {
+        if (recordingProfileInvalid) throw new IllegalStateException("Stored recording profile must be reconfigured");
+        return recordingProfile;
+    }
+
+    /** Return success only after all profile fields are durable; failed commits keep the old snapshot. */
+    public synchronized boolean setRecordingProfile(RecordingProfile profile) {
+        if (profile == null) throw new IllegalArgumentException("Recording profile is required");
+        if (recordingProfile != null && recordingProfile.revision.equals(profile.revision)) {
+            if (!recordingProfile.sameValues(profile)) throw new IllegalArgumentException("profile_revision_reused");
+            return true;
+        }
+        try {
+            String previous = prefs.getString(AsgConstants.RECORDING_PROFILE_KEY, null);
+            int previousWidth = prefs.getInt(KEY_BUTTON_VIDEO_WIDTH, 1920);
+            int previousHeight = prefs.getInt(KEY_BUTTON_VIDEO_HEIGHT, 1080);
+            int previousFps = prefs.getInt(KEY_BUTTON_VIDEO_FPS, 30);
+            int previousDuration = prefs.getInt(KEY_BUTTON_MAX_RECORDING_TIME_MINUTES, 10);
+            boolean committed = prefs.edit().putString(AsgConstants.RECORDING_PROFILE_KEY, profile.toJson().toString())
+                    .putInt(KEY_BUTTON_VIDEO_WIDTH, profile.width).putInt(KEY_BUTTON_VIDEO_HEIGHT, profile.height)
+                    .putInt(KEY_BUTTON_VIDEO_FPS, profile.fps)
+                    .putInt(KEY_BUTTON_MAX_RECORDING_TIME_MINUTES, profile.maxRecordingTimeMinutes).commit();
+            if (!committed) {
+                // SharedPreferences may publish an in-memory value despite a failed disk commit.
+                // Restore its old JSON; consumers still use the last committed cached snapshot.
+                SharedPreferences.Editor rollback = prefs.edit();
+                if (previous == null) rollback.remove(AsgConstants.RECORDING_PROFILE_KEY);
+                else rollback.putString(AsgConstants.RECORDING_PROFILE_KEY, previous);
+                rollback.putInt(KEY_BUTTON_VIDEO_WIDTH, previousWidth).putInt(KEY_BUTTON_VIDEO_HEIGHT, previousHeight)
+                        .putInt(KEY_BUTTON_VIDEO_FPS, previousFps).putInt(KEY_BUTTON_MAX_RECORDING_TIME_MINUTES, previousDuration);
+                rollback.commit();
+                return false;
+            }
+            recordingProfile = profile;
+            recordingProfileInvalid = false;
+            return true;
+        } catch (org.json.JSONException invalid) { return false; }
+    }
+
+    /** Persist one consumed grant before capture, so a process restart cannot reuse its allowance. */
+    public synchronized boolean isRecordingGrantConsumed(String grantId, String sessionId) {
+        try {
+            String saved = prefs.getString(AsgConstants.RECORDING_CONSUMED_GRANT_KEY, null);
+            if (saved == null) return false;
+            org.json.JSONObject previous = new org.json.JSONObject(saved);
+            return grantId.equals(previous.optString("grantId")) || sessionId.equals(previous.optString("sessionId"));
+        } catch (org.json.JSONException invalid) { return true; }
+    }
+
+    /** Persist one consumed grant before capture, so a process restart cannot reuse its allowance. */
+    public synchronized boolean claimRecordingGrant(String grantId, String sessionId) {
+        try {
+            String saved = prefs.getString(AsgConstants.RECORDING_CONSUMED_GRANT_KEY, null);
+            if (saved != null) {
+                org.json.JSONObject previous = new org.json.JSONObject(saved);
+                if (grantId.equals(previous.optString("grantId")) || sessionId.equals(previous.optString("sessionId"))) return false;
+            }
+            return prefs.edit().putString(AsgConstants.RECORDING_CONSUMED_GRANT_KEY,
+                    new org.json.JSONObject().put("grantId", grantId).put("sessionId", sessionId).toString()).commit();
+        } catch (org.json.JSONException invalid) { return false; }
     }
 
     /**

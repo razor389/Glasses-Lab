@@ -1,5 +1,6 @@
 package com.mentra.asg_client.utils;
 
+import com.mentra.asg_client.camera.lifecycle.VideoSegmentFiles;
 import java.util.Collections;
 import java.util.Set;
 
@@ -57,7 +58,9 @@ public final class GallerySyncFilter {
      */
     public static boolean isCaptureBlockedFromSync(
             String fileName, String activeCaptureId, Set<String> blockedCaptureIds) {
+        if (fileName != null && fileName.endsWith(".partial")) return true;
         String captureId = deriveCaptureId(fileName);
+        if (VideoSegmentFiles.isPublicationPending(captureId)) return true;
         if (activeCaptureId != null && activeCaptureId.equals(captureId)) {
             return true;
         }

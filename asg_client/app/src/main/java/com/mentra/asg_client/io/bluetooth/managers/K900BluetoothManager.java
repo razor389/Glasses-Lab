@@ -1778,14 +1778,11 @@ public class K900BluetoothManager extends BaseBluetoothManager implements Serial
                             }
 
                             // Notify listeners with the clean payload (JSON data without markers)
-                            String payloadPreview =
-                                    new String(payload, 0, Math.min(payload.length, 200));
                             Log.d(
                                     TAG,
                                     "📥 Extracted K900 payload ("
                                             + payload.length
-                                            + " bytes): "
-                                            + payloadPreview);
+                                            + " bytes)");
 
                             // Check if this is a sr_syvr response (BES system version)
                             // or an sr_baud response (UART baud switch ack).

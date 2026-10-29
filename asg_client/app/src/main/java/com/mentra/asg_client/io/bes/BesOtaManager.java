@@ -4,6 +4,7 @@ import android.content.Context;
 import android.util.Log;
 
 import com.mentra.asg_client.AsgConstants;
+import com.mentra.asg_client.DevelopmentSafety;
 import com.mentra.asg_client.io.bes.events.BesOtaProgressEvent;
 import com.mentra.asg_client.io.bes.protocol.*;
 import com.mentra.asg_client.io.bes.util.BesOtaUtil;
@@ -228,6 +229,10 @@ public class BesOtaManager implements IBesOtaController, BesOtaUartListener, Bes
      * @return true if initialized successfully, false otherwise
      */
     public boolean init(String filePath) {
+        if (!DevelopmentSafety.allowsStockMaintenance(mContext)) {
+            Log.w(TAG, "Development build: refusing BES firmware installation");
+            return false;
+        }
         Log.i(TAG, "🔧 Initializing BES OTA with file: " + filePath);
         this.filePath = filePath;
         bInit = false;

@@ -13,6 +13,7 @@ import com.mentra.asg_client.io.peripheral.IPeripheralBus;
 import com.mentra.asg_client.io.peripheral.events.ButtonEvent;
 import com.mentra.asg_client.io.peripheral.events.McuEvent;
 import com.mentra.asg_client.service.core.constants.BatteryConstants;
+import com.mentra.asg_client.service.core.handlers.RecordingProfileStarter;
 import com.mentra.asg_client.service.legacy.managers.AsgClientServiceManager;
 import com.mentra.asg_client.service.system.interfaces.IStateManager;
 import com.mentra.asg_client.settings.VideoSettings;
@@ -90,6 +91,29 @@ public final class ButtonEventSubscriber implements IPeripheralBus.McuEventListe
      * currently active OR if glasses are disconnected
      */
     private void handlePhotoCapture(boolean isLongPress) {
+        MediaCaptureService activeCapture = serviceManager.getMediaCaptureService();
+        // Stop is always local and must work even if gallery, phone readiness or battery changed.
+        if (activeCapture != null && (activeCapture.isRecordingVideo() || activeCapture.isVideoRecordingActiveOrStarting())) {
+            activeCapture.stopVideoRecording();
+            return;
+        }
+        if (isLongPress) {
+            try {
+                if (serviceManager.getAsgSettings().getRecordingProfile() != null) {
+                    int battery = stateManager != null ? stateManager.getBatteryLevel() : -1;
+                    if (battery >= 0 && battery < BatteryConstants.MIN_BATTERY_LEVEL) {
+                        if (activeCapture != null) activeCapture.playBatteryLowSound();
+                        return;
+                    }
+                    RecordingProfileStarter.start(serviceManager, null, null, "button", true);
+                    return;
+                }
+            } catch (Exception unavailable) {
+                Log.w(TAG, "Shared recording profile declined: " + unavailable.getMessage());
+                if (hardwareManager.supportsAudioPlayback()) hardwareManager.playAudioAsset(AudioAssets.DISCONNECTED);
+                return;
+            }
+        }
         // Check if gallery/camera app is active before capturing
         boolean isSaveInGalleryMode = serviceManager.getAsgSettings().isSaveInGalleryMode();
 

@@ -46,6 +46,10 @@ import kotlin.jvm.JvmStatic
 class DeviceManager {
     companion object {
 
+        /** Opt in when a native host owns its foreground service and reconnect policy. */
+        const val HOST_MANAGES_CONNECTION_LIFECYCLE =
+            "com.mentra.bluetoothsdk.host_manages_connection_lifecycle"
+
         @Volatile
         private var _instance: DeviceManager? = null
 
@@ -57,6 +61,11 @@ class DeviceManager {
     }
 
     // MARK: - Unique (Android)
+    private val hostManagesConnectionLifecycle = runCatching {
+        val context = Bridge.getContext()
+        context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA)
+            .metaData?.getBoolean(HOST_MANAGES_CONNECTION_LIFECYCLE, false) ?: false
+    }.getOrDefault(false)
     private var serviceStarted = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -524,7 +533,7 @@ class DeviceManager {
                         BluetoothAdapter.STATE_ON -> {
                             Bridge.log("MAN: Bluetooth turned ON")
                             // Auto-reconnect to last known device if we have one
-                            if (defaultWearable.isNotEmpty() && deviceName.isNotEmpty()) {
+                            if (!hostManagesConnectionLifecycle && defaultWearable.isNotEmpty() && deviceName.isNotEmpty()) {
                                 Bridge.log(
                                     "MAN: Bluetooth restored, attempting reconnect to: $deviceName"
                                 )
@@ -564,6 +573,7 @@ class DeviceManager {
     }
 
     private fun startForegroundService() {
+        if (hostManagesConnectionLifecycle) return
         val context = Bridge.getContext()
 
         try {
@@ -591,6 +601,7 @@ class DeviceManager {
      * updates its type mask without tearing down the glasses connection.
      */
     fun refreshForegroundServiceTypes() {
+        if (hostManagesConnectionLifecycle) return
         val context = Bridge.getContext()
 
         try {
@@ -614,6 +625,7 @@ class DeviceManager {
     }
 
     private fun restartForegroundService() {
+        if (hostManagesConnectionLifecycle) return
         val context = Bridge.getContext()
 
         try {
@@ -1629,9 +1641,12 @@ class DeviceManager {
         sgc?.forgetWifiNetwork(ssid)
     }
 
-    fun setHotspotState(enabled: Boolean) {
+    fun setHotspotState(enabled: Boolean, syncToken: String? = null) {
         Bridge.log("MAN: Setting glasses hotspot state: $enabled")
-        sgc?.sendHotspotState(enabled)
+        if (syncToken != null) {
+            val live = sgc as? MentraLive ?: error("Authenticated local media sync requires Mentra Live.")
+            live.sendLabHotspotState(enabled, syncToken)
+        } else sgc?.sendHotspotState(enabled)
     }
 
     fun setWifiAdbState(enabled: Boolean) {
@@ -1713,6 +1728,16 @@ class DeviceManager {
     fun sendButtonMaxRecordingTime(requestId: String, minutes: Int) {
         val live = sgc as? MentraLive ?: throw IllegalStateException("unsupported_device")
         live.sendButtonMaxRecordingTime(requestId, minutes)
+    }
+
+    fun sendRecordingProfile(requestId: String, profile: UnifiedRecordingProfile) {
+        val live = sgc as? MentraLive ?: throw IllegalStateException("unsupported_device")
+        live.sendRecordingProfile(requestId, profile)
+    }
+
+    fun requestVideoRecordingStatus(requestId: String?) {
+        val live = sgc as? MentraLive ?: throw IllegalStateException("unsupported_device")
+        live.requestVideoRecordingStatus(requestId)
     }
 
     fun sendCameraFovSetting(requestId: String, fov: Int, roiPosition: Int) {
@@ -1855,6 +1880,17 @@ class DeviceManager {
         sgc?.sendReboot()
     }
 
+    fun startVideoRecording(request: VideoRecordingRequest) {
+        VideoRecordingCommand.fields(request) // Validate the full request before legacy routing drops optional fields.
+        if (request.useRecordingProfile) {
+            val live = sgc as? MentraLive ?: throw IllegalStateException("unsupported_device")
+            live.startVideoRecordingFromProfile(request)
+        } else {
+            startVideoRecording(request.requestId, request.save, request.sound, request.width, request.height,
+                request.fps, request.maxRecordingTimeMinutes, request.segmented)
+        }
+    }
+
     fun startVideoRecording(
         requestId: String,
         save: Boolean,
@@ -1863,13 +1899,24 @@ class DeviceManager {
         height: Int = 0,
         fps: Int = 0,
         maxRecordingTimeMinutes: Int = 0,
+    ) = startVideoRecording(requestId, save, sound, width, height, fps, maxRecordingTimeMinutes, null)
+
+    fun startVideoRecording(
+        requestId: String,
+        save: Boolean,
+        sound: Boolean,
+        width: Int,
+        height: Int,
+        fps: Int,
+        maxRecordingTimeMinutes: Int,
+        segmented: SegmentedVideoOptions?,
     ) {
         Bridge.log(
             "MAN: onStartVideoRecording: requestId=$requestId, save=$save, sound=$sound, " +
                 "resolution=${width}x${height}@${fps}fps, maxRecordingTimeMinutes=$maxRecordingTimeMinutes"
         )
         sgc?.startVideoRecording(
-            requestId, save, sound, width, height, fps, maxRecordingTimeMinutes
+            requestId, save, sound, width, height, fps, maxRecordingTimeMinutes, segmented
         )
     }
 

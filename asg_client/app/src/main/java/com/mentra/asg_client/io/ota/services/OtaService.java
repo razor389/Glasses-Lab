@@ -14,6 +14,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.util.Log;
 import androidx.core.app.NotificationCompat;
+import com.mentra.asg_client.DevelopmentSafety;
 import com.mentra.asg_client.events.BatteryStatusEvent;
 import com.mentra.asg_client.io.bes.events.BesOtaProgressEvent;
 import com.mentra.asg_client.io.ota.events.DownloadProgressEvent;
@@ -69,6 +70,10 @@ public class OtaService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (!DevelopmentSafety.allowsStockMaintenance(this)) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         Log.d(TAG, "OtaService onStartCommand");
         return START_STICKY;
     }

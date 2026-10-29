@@ -15,6 +15,8 @@ import com.mentra.asg_client.audio.AudioAssets;
 import com.mentra.asg_client.camera.CameraNeoService;
 import com.mentra.asg_client.camera.feedback.PhotoFeedbackController;
 import com.mentra.asg_client.camera.lifecycle.PhotoExifMetadataWriter;
+import com.mentra.asg_client.camera.lifecycle.PhotoPersistenceRegistry;
+import com.mentra.asg_client.camera.lifecycle.VideoSegmentFiles;
 import com.mentra.asg_client.camera.model.CameraOperationError;
 import com.mentra.asg_client.camera.model.CapturedPhoto;
 import com.mentra.asg_client.camera.model.PhotoCaptureSettings;
@@ -95,8 +97,10 @@ public class MediaCaptureService {
     private final MlKitTextRoiDetector textRoiDetector;
 
     // Track current video recording
-    private boolean isRecordingVideo = false;
-    private String currentVideoId = null;
+    private volatile boolean isRecordingVideo = false;
+    private volatile String currentVideoId = null;
+    private volatile JSONObject activeProfileStatus;
+    private volatile String profileStopReason;
     // volatile: read in the stop prologue (BLE worker / main looper) to derive the upload-target
     // captureId key, while written on the start/callback threads — needs cross-thread visibility.
     private volatile String currentVideoPath = null;
@@ -414,6 +418,22 @@ public class MediaCaptureService {
     private String writeCroppedBitmapToTempJpeg(
             String originalPath, @Nullable android.graphics.Rect roi, String requestId)
             throws java.io.IOException {
+        String croppedPath = originalPath.replace(".jpg", "_textcrop_" + requestId + ".jpg");
+        try (PhotoPersistenceRegistry.Lease source =
+                        PhotoPersistenceRegistry.beginForBuild(originalPath);
+                PhotoPersistenceRegistry.Lease output =
+                        PhotoPersistenceRegistry.beginForBuild(croppedPath)) {
+            String result = writeCroppedBitmapToTempJpegProtected(originalPath, roi, requestId);
+            source.complete();
+            output.complete();
+            return result;
+        }
+    }
+
+    @Nullable
+    private String writeCroppedBitmapToTempJpegProtected(
+            String originalPath, @Nullable android.graphics.Rect roi, String requestId)
+            throws java.io.IOException {
         if (roi == null) {
             Log.w(TAG, "Text-mode detector returned no ROI; preserving the camera JPEG");
             return null;
@@ -450,21 +470,24 @@ public class MediaCaptureService {
             return photoFilePath;
         }
 
-        Log.d(TAG, "✂️ Text mode: preparing the canonical cropped photo before transfer");
-        TextRegionDetection detection = runTextRegionDetection(photoFilePath);
-        try {
-            String croppedPath =
-                    writeCroppedBitmapToTempJpeg(photoFilePath, detection.roi, requestId);
-            if (croppedPath != null) {
-                PhotoArtifactFiles.promoteToCanonical(photoFilePath, croppedPath);
-                photoTextCropPrepared.put(requestId, true);
-                photoTextCropApplied.put(requestId, true);
-                return photoFilePath;
+        try (PhotoPersistenceRegistry.Lease persistence =
+                PhotoPersistenceRegistry.beginForBuild(photoFilePath)) {
+            Log.d(TAG, "✂️ Text mode: preparing the canonical cropped photo before transfer");
+            TextRegionDetection detection = runTextRegionDetection(photoFilePath);
+            try {
+                String croppedPath =
+                        writeCroppedBitmapToTempJpeg(photoFilePath, detection.roi, requestId);
+                if (croppedPath != null) {
+                    PhotoArtifactFiles.promoteToCanonical(photoFilePath, croppedPath);
+                    photoTextCropPrepared.put(requestId, true);
+                    photoTextCropApplied.put(requestId, true);
+                }
+                persistence.complete();
+            } catch (java.io.IOException e) {
+                Log.w(TAG, "Text-mode crop failed, transferring original frame: " + e.getMessage(), e);
             }
-        } catch (java.io.IOException e) {
-            Log.w(TAG, "Text-mode crop failed, transferring original frame: " + e.getMessage(), e);
+            return photoFilePath;
         }
-        return photoFilePath;
     }
 
     /**
@@ -482,6 +505,28 @@ public class MediaCaptureService {
     }
 
     private boolean persistTextModeSelectionFromMemory(
+            CapturedPhoto capturedPhoto,
+            String canonicalPath,
+            String intendedCapturePath,
+            String requestId,
+            @Nullable android.graphics.Rect roi,
+            boolean writeSidecar) {
+        String preparedPath = canonicalPath.replace(".jpg", "_textselected_" + requestId + ".jpg");
+        try (PhotoPersistenceRegistry.Lease canonical =
+                        PhotoPersistenceRegistry.beginForBuild(canonicalPath);
+                PhotoPersistenceRegistry.Lease prepared =
+                        PhotoPersistenceRegistry.beginForBuild(preparedPath)) {
+            boolean result = persistTextModeSelectionFromMemoryProtected(
+                    capturedPhoto, canonicalPath, intendedCapturePath, requestId, roi, writeSidecar);
+            if (result) {
+                canonical.complete();
+                prepared.complete();
+            }
+            return result;
+        }
+    }
+
+    private boolean persistTextModeSelectionFromMemoryProtected(
             CapturedPhoto capturedPhoto,
             String canonicalPath,
             String intendedCapturePath,
@@ -1115,13 +1160,17 @@ public class MediaCaptureService {
                         + maxRecordingTimeMinutes);
 
         // Check if already recording
-        if (isRecordingVideo) {
+        if (isVideoRecordingActiveOrStarting()) {
             Log.w(TAG, "Already recording video, ignoring start command");
             if (mMediaCaptureListener != null) {
                 mMediaCaptureListener.onMediaError(
                         requestId, "Already recording", MediaUploadQueueManager.MEDIA_TYPE_VIDEO);
             }
             return;
+        }
+
+        if (settings != null && settings.recordingProfile != null) {
+            reserveRecordingProfile(requestId, settings);
         }
 
         // Generate filename with requestId
@@ -1136,8 +1185,22 @@ public class MediaCaptureService {
                         + randomSuffix
                         + (embeddedRequestId.isEmpty() ? "" : "_" + embeddedRequestId);
         File captureDirFile = new File(fileManager.getDefaultMediaDirectory(), captureDir);
-        captureDirFile.mkdirs();
-        String videoFilePath = new File(captureDirFile, "base.mp4").getAbsolutePath();
+        String videoFilePath;
+        if (settings != null && settings.segmented != null) {
+            try {
+                videoFilePath = VideoSegmentFiles.firstFile(
+                        fileManager.getDefaultMediaDirectory(), requestId).getAbsolutePath();
+            } catch (Exception error) {
+                finishProfileRecording(requestId, settings, 0, "segment_reservation_error", false);
+                if (mMediaCaptureListener != null) mMediaCaptureListener.onMediaError(
+                        requestId, "Cannot reserve video segment: " + error.getMessage(),
+                        MediaUploadQueueManager.MEDIA_TYPE_VIDEO);
+                return;
+            }
+        } else {
+            captureDirFile.mkdirs();
+            videoFilePath = new File(captureDirFile, "base.mp4").getAbsolutePath();
+        }
 
         // Start video recording with the provided requestId and settings (or null for defaults)
         startVideoRecording(
@@ -1157,6 +1220,12 @@ public class MediaCaptureService {
      */
     public void handleStopVideoCommand(String requestId, String webhookUrl, String authToken) {
         Log.d(TAG, "handleStopVideoCommand called with requestId: " + requestId);
+
+        JSONObject profile = activeProfileStatus;
+        if (profile != null && requestId.equals(profile.optString("sessionId"))) {
+            stopVideoRecording(webhookUrl, authToken);
+            return;
+        }
 
         if (!isRecordingVideo) {
             Log.w(TAG, "No video recording to stop");
@@ -1225,6 +1294,7 @@ public class MediaCaptureService {
                 || SrtStreamingService.isStreaming()
                 || WhipStreamingService.isStreaming()) {
             Log.e(TAG, "Cannot start video - streaming active");
+            finishProfileRecording(requestId, settings, 0, "camera_busy", false);
             if (mMediaCaptureListener != null) {
                 mMediaCaptureListener.onMediaError(
                         requestId,
@@ -1237,6 +1307,7 @@ public class MediaCaptureService {
         // Check if camera is actively in use (this will return false for kept-alive idle camera)
         if (CameraNeoService.isCameraInUse()) {
             Log.e(TAG, "Cannot start video - camera actively in use");
+            finishProfileRecording(requestId, settings, 0, "camera_busy", false);
             if (mMediaCaptureListener != null) {
                 mMediaCaptureListener.onMediaError(
                         requestId, "Camera busy", MediaUploadQueueManager.MEDIA_TYPE_VIDEO);
@@ -1247,6 +1318,7 @@ public class MediaCaptureService {
         // Check storage availability before recording
         if (!isExternalStorageAvailable()) {
             Log.e(TAG, "External storage is not available for video capture");
+            finishProfileRecording(requestId, settings, 0, "storage_unavailable", false);
             if (mMediaCaptureListener != null) {
                 mMediaCaptureListener.onMediaError(
                         requestId,
@@ -1265,7 +1337,7 @@ public class MediaCaptureService {
         currentVideoLedEnabled = enableFlash; // Track LED state for this recording
         currentVideoSoundEnabled = enableSound; // Track sound state for this recording
         final String captureIdAtStart = captureIdFromVideoAbsPath(videoFilePath);
-        if (captureIdAtStart != null) {
+        if (captureIdAtStart != null && (settings == null || settings.segmented == null)) {
             videoCaptureIdsInFlight.add(captureIdAtStart);
             Log.d(TAG, "Video capture blocked from sync (in-flight): " + captureIdAtStart);
         }
@@ -1286,11 +1358,68 @@ public class MediaCaptureService {
                     videoFilePath,
                     settings,
                     new CameraNeoService.VideoRecordingCallback() {
+                        private long lastSegmentedLedRenewalElapsedMs;
+
+                        @Override
+                        public void onSegmentedRecordingStopped(String videoId, int count, String reason, boolean success) {
+                            // Finalized segments already passed integrity verification and the
+                            // durable .partial -> .mp4 transition in the camera worker. Never run
+                            // the legacy single-file upload/thumbnail path for this session.
+                            mainHandler.post(() -> {
+                                stopBatteryMonitoring();
+                                if (recordingTimeCheckRunnable != null) {
+                                    recordingTimeHandler.removeCallbacks(recordingTimeCheckRunnable);
+                                    recordingTimeCheckRunnable = null;
+                                }
+                                if (captureIdAtStart != null) {
+                                    videoCaptureIdsInFlight.remove(captureIdAtStart);
+                                    videoCaptureIdsPendingIntegrityCheck.remove(captureIdAtStart);
+                                    uploadTargetsByCaptureId.remove(captureIdAtStart);
+                                }
+                                isRecordingVideo = false;
+                                currentVideoId = null;
+                                currentVideoPath = null;
+                                stopVideoRecordingLed();
+                                if (enableFlash && hardwareManager.supportsRecordingLed()) hardwareManager.setRecordingLedOff();
+                                try {
+                                    JSONObject status = new JSONObject();
+                                    status.put("type", "video_recording_status");
+                                    status.put("requestId", videoId);
+                                    status.put("sessionId", videoId);
+                                    status.put("segmentCount", count);
+                                    status.put("stopReason", reason);
+                                    status.put("success", success);
+                                    status.put("status", success ? "recording_stopped" : "error");
+                                    status.put("timestamp", System.currentTimeMillis());
+                                    addProfileMetadata(status, settings);
+                                    boolean persisted = mContext.getSharedPreferences(
+                                                    AsgConstants.VIDEO_SEGMENT_STATUS_PREFS, Context.MODE_PRIVATE)
+                                            .edit().putString(AsgConstants.VIDEO_SEGMENT_STATUS_KEY, status.toString()).commit();
+                                    if (!persisted) {
+                                        status.put("success", false);
+                                        status.put("status", "error");
+                                        status.put("stopReason", "status_persistence_error");
+                                        // commit() updates the in-memory preference even when disk
+                                        // persistence fails. Never replay its earlier success value.
+                                        mContext.getSharedPreferences(AsgConstants.VIDEO_SEGMENT_STATUS_PREFS, Context.MODE_PRIVATE)
+                                                .edit().putString(AsgConstants.VIDEO_SEGMENT_STATUS_KEY, status.toString()).commit();
+                                    }
+                                    if (mServiceCallback != null) mServiceCallback.sendThroughBluetooth(
+                                            status.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                                    clearRecordingProfile(videoId);
+                                } catch (JSONException error) {
+                                    Log.e(TAG, "Could not encode segmented recording status", error);
+                                }
+                                sendGalleryStatusUpdate();
+                            });
+                        }
+
                         @Override
                         public void onRecordingStarted(String videoId) {
                             Log.d(TAG, "Video recording started with ID: " + videoId);
                             isRecordingVideo = true;
                             recordingStartTime = System.currentTimeMillis();
+                            lastSegmentedLedRenewalElapsedMs = android.os.SystemClock.elapsedRealtime();
 
                             // Start battery monitoring on main thread (callback runs on background
                             // thread)
@@ -1310,7 +1439,9 @@ public class MediaCaptureService {
                             }
 
                             // Notify listener
-                            if (mMediaCaptureListener != null) {
+                            if (settings != null && settings.recordingProfile != null) {
+                                sendProfileRecordingStarted(requestId, settings);
+                            } else if (mMediaCaptureListener != null) {
                                 mMediaCaptureListener.onVideoRecordingStarted(
                                         requestId, videoFilePath);
                             }
@@ -1356,6 +1487,9 @@ public class MediaCaptureService {
 
                                 // Start checking after 1 second
                                 recordingTimeHandler.postDelayed(recordingTimeCheckRunnable, 1000);
+                            }
+                            if (profileStopReason != null && activeProfileStatus != null) {
+                                mainHandler.post(() -> stopVideoRecording(StopReason.USER_REQUESTED));
                             }
                         }
 
@@ -1423,6 +1557,7 @@ public class MediaCaptureService {
                             currentVideoPath = null;
 
                             if (filePath == null || captureIdFromCallback == null) {
+                                finishProfileRecording(requestId, settings, 0, "missing_video", false);
                                 Log.e(
                                         TAG,
                                         "onRecordingStopped received null filePath for "
@@ -1442,6 +1577,7 @@ public class MediaCaptureService {
                             }
 
                             if (isCleaningUp.get()) {
+                                finishProfileRecording(requestId, settings, 0, "cleanup", false);
                                 Log.w(
                                         TAG,
                                         "Skipping video integrity check because cleanup is already"
@@ -1477,7 +1613,9 @@ public class MediaCaptureService {
                                                                             ? uploadTarget.authToken
                                                                             : null;
                                                             if (ok) {
-                                                                if (mMediaCaptureListener != null) {
+                                                                finishProfileRecording(requestId, settings, 1,
+                                                                        profileStopReason != null ? profileStopReason : "recorder_limit", true);
+                                                                if ((settings == null || settings.recordingProfile == null) && mMediaCaptureListener != null) {
                                                                     mMediaCaptureListener
                                                                             .onVideoRecordingStopped(
                                                                                     pendingRequestId,
@@ -1491,6 +1629,7 @@ public class MediaCaptureService {
                                                                         uploadAuthToken,
                                                                         save);
                                                             } else {
+                                                                finishProfileRecording(requestId, settings, 0, "integrity_error", false);
                                                                 final boolean cleaningUp =
                                                                         isCleaningUp.get();
                                                                 if (!cleaningUp) {
@@ -1541,6 +1680,7 @@ public class MediaCaptureService {
                                                             }
                                                         });
                                             } catch (Throwable t) {
+                                                finishProfileRecording(requestId, settings, 0, "integrity_error", false);
                                                 Log.e(
                                                         TAG,
                                                         "Unexpected error during video integrity"
@@ -1564,6 +1704,7 @@ public class MediaCaptureService {
                                             }
                                         });
                             } catch (RejectedExecutionException e) {
+                                finishProfileRecording(requestId, settings, 0, "cleanup", false);
                                 Log.w(
                                         TAG,
                                         "Video integrity check rejected because cleanup is in"
@@ -1586,6 +1727,7 @@ public class MediaCaptureService {
 
                         @Override
                         public void onRecordingError(String videoId, String errorMessage) {
+                            finishProfileRecording(requestId, settings, 0, "recording_error", false);
                             Log.e(
                                     TAG,
                                     "Video recording error: "
@@ -1642,6 +1784,19 @@ public class MediaCaptureService {
 
                         @Override
                         public void onRecordingProgress(String videoId, long durationMs) {
+                            // The front MTK privacy LED is latched on until stop. The separate
+                            // inward BES status LED has a 30-minute lease, so renew it while this
+                            // exact segmented session remains active. Wall-clock changes must not
+                            // expire the indication early, and old callbacks must not relight it.
+                            if (settings != null && (settings.segmented != null || settings.recordingProfile != null) && enableFlash
+                                    && isRecordingVideo && requestId.equals(videoId)
+                                    && requestId.equals(currentVideoId)) {
+                                long now = android.os.SystemClock.elapsedRealtime();
+                                if (now - lastSegmentedLedRenewalElapsedMs >= AsgConstants.VIDEO_SEGMENT_LED_RENEWAL_MS) {
+                                    lastSegmentedLedRenewalElapsedMs = now;
+                                    triggerVideoRecordingLed();
+                                }
+                            }
                             // Optional: Track recording duration if needed
                             // Not notifying the listener for this event as it would be too noisy
                             Log.v(
@@ -1655,6 +1810,7 @@ public class MediaCaptureService {
                     });
         } catch (Exception e) {
             Log.e(TAG, "Error starting video recording", e);
+            finishProfileRecording(requestId, settings, 0, "start_error", false);
 
             // Turn off RGB white LED if error occurred during start
             stopVideoRecordingLed();
@@ -1700,6 +1856,9 @@ public class MediaCaptureService {
      * @param authToken Bearer token for the webhook upload
      */
     private void stopVideoRecording(StopReason reason, String webhookUrl, String authToken) {
+        if (activeProfileStatus != null && profileStopReason == null) {
+            profileStopReason = reason.name().toLowerCase(Locale.ROOT);
+        }
         synchronized (mStopLock) {
             // Prevent recursive/concurrent stops
             if (mCurrentStopReason != null) {
@@ -1781,10 +1940,30 @@ public class MediaCaptureService {
             }
 
             // Stop the recording via CameraNeoService
-            CameraNeoService.stopVideoRecording(mContext, currentVideoId);
+            if (VideoSegmentFiles.identity(captureId) != null) {
+                CameraNeoService.stopVideoRecording(mContext, currentVideoId, reason.name().toLowerCase(Locale.ROOT));
+            } else {
+                CameraNeoService.stopVideoRecording(mContext, currentVideoId);
+            }
 
         } catch (Exception e) {
             Log.e(TAG, "Error stopping video recording", e);
+
+            if (activeProfileStatus != null) {
+                // A failed dispatch does not prove the recorder stopped. Keep the live identity
+                // and privacy indication so another physical/app Stop can retry safely.
+                try {
+                    JSONObject active = new JSONObject(activeProfileStatus.toString())
+                            .put("status", "recording_status").put("recording", true).put("success", false)
+                            .put("error", "stop_dispatch_failed").put("stopError", "stop_dispatch_failed");
+                    activeProfileStatus = active;
+                    if (mServiceCallback != null) mServiceCallback.sendThroughBluetooth(
+                            active.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                } catch (JSONException encoding) { Log.e(TAG, "Cannot encode stop failure", encoding); }
+                if (currentVideoLedEnabled) triggerVideoRecordingLed();
+                mainHandler.post(() -> { if (isRecordingVideo) startBatteryMonitoring(); });
+                return;
+            }
 
             if (mMediaCaptureListener != null) {
                 mMediaCaptureListener.onMediaError(
@@ -1839,6 +2018,99 @@ public class MediaCaptureService {
         return isRecordingVideo;
     }
 
+    /** Includes startup and final validation, so a physical press cannot race a second start. */
+    public boolean isVideoRecordingActiveOrStarting() {
+        return isRecordingVideo || currentVideoId != null || activeProfileStatus != null;
+    }
+
+    private synchronized void reserveRecordingProfile(String sessionId, VideoSettings settings) {
+        try {
+            JSONObject snapshot = new JSONObject().put("type", "video_recording_status")
+                    .put("requestId", sessionId).put("sessionId", sessionId)
+                    .put("status", "recording_status").put("recording", true).put("phase", "starting").put("success", true);
+            addProfileMetadata(snapshot, settings);
+            profileStopReason = null;
+            activeProfileStatus = snapshot;
+        } catch (JSONException error) { throw new IllegalStateException(error); }
+    }
+
+    private static void addProfileMetadata(JSONObject status, VideoSettings settings) throws JSONException {
+        if (settings == null || settings.recordingProfile == null) return;
+        status.put("profile", settings.recordingProfile.toJson());
+        status.put("origin", settings.recordingOrigin);
+        status.put("segmented", settings.segmented != null);
+        if (settings.recordingGrantId != null) status.put("grantId", settings.recordingGrantId);
+        if (settings.segmented != null) status.put("maxSessionBytes", settings.segmented.maxSessionBytes);
+    }
+
+    private synchronized void clearRecordingProfile(String sessionId) {
+        if (activeProfileStatus != null && sessionId.equals(activeProfileStatus.optString("sessionId"))) {
+            activeProfileStatus = null;
+            profileStopReason = null;
+        }
+    }
+
+    private void sendProfileRecordingStarted(String sessionId, VideoSettings settings) {
+        try {
+            JSONObject status = new JSONObject().put("type", "video_recording_status")
+                    .put("requestId", sessionId).put("sessionId", sessionId).put("status", "recording_started")
+                    .put("recording", true).put("phase", "recording").put("success", true);
+            addProfileMetadata(status, settings);
+            activeProfileStatus = status;
+            if (mServiceCallback != null) mServiceCallback.sendThroughBluetooth(status.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (JSONException error) { Log.e(TAG, "Cannot encode recording start", error); }
+    }
+
+    /** A consumed grant always gets an authoritative terminal result, even if setup fails. */
+    public void finishProfileRecording(String sessionId, VideoSettings settings, int count, String reason, boolean success) {
+        if (settings == null || settings.recordingProfile == null) return;
+        try {
+            JSONObject status = new JSONObject().put("type", "video_recording_status")
+                    .put("requestId", sessionId).put("sessionId", sessionId).put("segmentCount", count)
+                    .put("stopReason", reason).put("success", success).put("recording", false)
+                    .put("status", success ? "recording_stopped" : "error").put("timestamp", System.currentTimeMillis());
+            addProfileMetadata(status, settings);
+            boolean committed = mContext.getSharedPreferences(AsgConstants.VIDEO_SEGMENT_STATUS_PREFS, Context.MODE_PRIVATE)
+                    .edit().putString(AsgConstants.VIDEO_SEGMENT_STATUS_KEY, status.toString()).commit();
+            if (!committed) {
+                status.put("success", false).put("status", "error").put("stopReason", "status_persistence_error");
+                mContext.getSharedPreferences(AsgConstants.VIDEO_SEGMENT_STATUS_PREFS, Context.MODE_PRIVATE)
+                        .edit().putString(AsgConstants.VIDEO_SEGMENT_STATUS_KEY, status.toString()).commit();
+            }
+            clearRecordingProfile(sessionId);
+            if (mServiceCallback != null) mServiceCallback.sendThroughBluetooth(status.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (JSONException error) { Log.e(TAG, "Cannot encode recording completion", error); }
+    }
+
+    /** Query the actual active session or last durable terminal; an empty ID is a global query. */
+    public JSONObject getRecordingProfileStatus(String requestId) {
+        try {
+            JSONObject active = activeProfileStatus;
+            if (active != null) {
+                if (requestId != null && !requestId.isEmpty() && !requestId.equals(active.optString("sessionId"))) return null;
+                return new JSONObject(active.toString()).put("status", "recording_status").put("duration_ms", getRecordingDurationMs());
+            }
+            if (isVideoRecordingActiveOrStarting()) return null;
+            String saved = mContext.getSharedPreferences(AsgConstants.VIDEO_SEGMENT_STATUS_PREFS, Context.MODE_PRIVATE)
+                    .getString(AsgConstants.VIDEO_SEGMENT_STATUS_KEY, null);
+            if (saved == null) return null;
+            JSONObject terminal = new JSONObject(saved);
+            return requestId == null || requestId.isEmpty() || requestId.equals(terminal.optString("sessionId")) ? terminal : null;
+        } catch (JSONException error) { return null; }
+    }
+
+    /** Replay only the exact last session; absence never implies that interrupted footage is saved. */
+    public JSONObject getSegmentedTerminalStatus(String requestId) {
+        if (requestId == null || requestId.isEmpty()) return null;
+        String saved = mContext.getSharedPreferences(AsgConstants.VIDEO_SEGMENT_STATUS_PREFS, Context.MODE_PRIVATE)
+                .getString(AsgConstants.VIDEO_SEGMENT_STATUS_KEY, null);
+        if (saved == null) return null;
+        try {
+            JSONObject status = new JSONObject(saved);
+            return requestId.equals(status.optString("sessionId")) ? status : null;
+        } catch (JSONException invalid) { return null; }
+    }
+
     /**
      * Get the capture directory name (e.g. "VID_20250322_120000_123") of the actively recording
      * video, or null if idle. Used by AsgCameraServer to exclude the entire capture group from
@@ -1848,6 +2120,9 @@ public class MediaCaptureService {
         if (currentVideoPath == null) {
             return null;
         }
+        // Segmented output has file-level readiness: the current .partial is always hidden,
+        // while previous .mp4 segments must remain downloadable during this same session.
+        if (VideoSegmentFiles.identity(captureIdFromVideoAbsPath(currentVideoPath)) != null) return null;
         return captureIdFromVideoAbsPath(currentVideoPath);
     }
 
@@ -3859,16 +4134,7 @@ public class MediaCaptureService {
                                 String compressedPath =
                                         originalPath.replace(
                                                 ".jpg", "_compressed_" + compress + ".jpg");
-                                FileOutputStream fos = new FileOutputStream(compressedPath);
-                                compressed.compress(
-                                        android.graphics.Bitmap.CompressFormat.JPEG,
-                                        jpegQuality,
-                                        fos);
-                                fos.close();
-                                compressed.recycle();
-
-                                PhotoExifMetadataWriter.copyImuMetadata(
-                                        originalPath, compressedPath);
+                                writeReencodedPhoto(compressed, originalPath, compressedPath, jpegQuality);
 
                                 long compressionDuration =
                                         System.currentTimeMillis() - compressionStartTime;
@@ -3913,6 +4179,26 @@ public class MediaCaptureService {
                             }
                         })
                 .start();
+    }
+
+    /** Keep a derived JPEG unavailable to reclamation until pixels and EXIF are both finished. */
+    private void writeReencodedPhoto(
+            android.graphics.Bitmap bitmap, String originalPath, String outputPath, int quality)
+            throws java.io.IOException {
+        try (PhotoPersistenceRegistry.Lease source = PhotoPersistenceRegistry.beginForBuild(originalPath);
+                PhotoPersistenceRegistry.Lease destination = PhotoPersistenceRegistry.beginForBuild(outputPath)) {
+            try (FileOutputStream output = new FileOutputStream(outputPath)) {
+                if (!bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, output)) {
+                    throw new java.io.IOException("Failed to write reencoded JPEG");
+                }
+                output.getFD().sync();
+            }
+            PhotoExifMetadataWriter.copyImuMetadata(originalPath, outputPath);
+            source.complete();
+            destination.complete();
+        } finally {
+            bitmap.recycle();
+        }
     }
 
     /** Compress image for poor connection scenarios (legacy method - kept for compatibility) */
@@ -3975,16 +4261,7 @@ public class MediaCaptureService {
                                 // Save compressed image to temporary file
                                 String compressedPath =
                                         originalPath.replace(".jpg", "_compressed.jpg");
-                                FileOutputStream fos = new FileOutputStream(compressedPath);
-                                compressed.compress(
-                                        android.graphics.Bitmap.CompressFormat.JPEG,
-                                        60,
-                                        fos); // 60% quality
-                                fos.close();
-                                compressed.recycle();
-
-                                PhotoExifMetadataWriter.copyImuMetadata(
-                                        originalPath, compressedPath);
+                                writeReencodedPhoto(compressed, originalPath, compressedPath, 60);
 
                                 long compressionDuration =
                                         System.currentTimeMillis() - compressionStartTime;
@@ -4763,13 +5040,17 @@ public class MediaCaptureService {
             File destinationFile = new File(directory, fileName);
 
             // Copy the file
-            try (FileInputStream in = new FileInputStream(mediaFile);
+            try (PhotoPersistenceRegistry.Lease persistence =
+                            PhotoPersistenceRegistry.beginForBuild(destinationFile.getAbsolutePath());
+                    FileInputStream in = new FileInputStream(mediaFile);
                     java.io.FileOutputStream out = new FileOutputStream(destinationFile)) {
                 byte[] buf = new byte[8192];
                 int len;
                 while ((len = in.read(buf)) > 0) {
                     out.write(buf, 0, len);
                 }
+                out.getFD().sync();
+                persistence.complete();
             }
 
             Log.d(TAG, "Media saved locally: " + destinationFile.getAbsolutePath());

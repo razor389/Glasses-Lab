@@ -3,6 +3,7 @@ package com.mentra.asg_client.camera.model;
 import android.util.Log;
 
 import com.mentra.asg_client.AsgConstants;
+import com.mentra.asg_client.camera.policy.PhotoQualityProfile;
 import com.mentra.asg_client.settings.AsgSettings;
 
 import org.json.JSONObject;
@@ -28,6 +29,8 @@ public final class PhotoCaptureSettings {
     public final Boolean mfnr;
     public final Integer ispDigitalGain;
     public final String ispAnalogGain;
+    /** Immutable size/JPEG policy carried through both queued and active captures. */
+    public final PhotoQualityProfile qualityProfile;
 
     public final String noiseReductionWarning;
     public final String ispDigitalGainWarning;
@@ -42,6 +45,7 @@ public final class PhotoCaptureSettings {
         mfnr = builder.mfnr;
         ispDigitalGain = builder.ispDigitalGain;
         ispAnalogGain = builder.ispAnalogGain;
+        qualityProfile = builder.qualityProfile;
         noiseReductionWarning = builder.noiseReductionWarning;
         ispDigitalGainWarning = builder.ispDigitalGainWarning;
         ispAnalogGainWarning = builder.ispAnalogGainWarning;
@@ -53,6 +57,7 @@ public final class PhotoCaptureSettings {
         }
         Builder builder = new Builder();
 
+        builder.qualityProfile(PhotoQualityProfile.fromJson(data));
         if (data.has("aeExposureDivisor") && !data.isNull("aeExposureDivisor")) {
             int divisor = data.optInt("aeExposureDivisor", 0);
             if (divisor > 1) {
@@ -126,6 +131,7 @@ public final class PhotoCaptureSettings {
             return request;
         }
         Builder builder = new Builder();
+        builder.qualityProfile(request.qualityProfile);
         builder.aeExposureDivisor(request.aeExposureDivisor);
         builder.isoCap(request.isoCap);
         builder.noiseReduction(request.noiseReduction);
@@ -153,6 +159,7 @@ public final class PhotoCaptureSettings {
             return request;
         }
         Builder builder = new Builder();
+        builder.qualityProfile(request.qualityProfile);
         builder.aeExposureDivisor(
                 request.aeExposureDivisor != null
                         ? request.aeExposureDivisor
@@ -438,6 +445,7 @@ public final class PhotoCaptureSettings {
         sb.append(", mfnr=").append(mfnr);
         sb.append(", ispDigitalGain=").append(ispDigitalGain);
         sb.append(", ispAnalogGain=").append(ispAnalogGain);
+        sb.append(", qualityProfile=").append(qualityProfile);
         if (noiseReductionWarning != null) {
             sb.append(", noiseReductionWarning=").append(noiseReductionWarning);
         }
@@ -485,6 +493,7 @@ public final class PhotoCaptureSettings {
     }
 
     public static final class Builder {
+        private PhotoQualityProfile qualityProfile = PhotoQualityProfile.DEFAULT;
         private Integer aeExposureDivisor;
         private Integer isoCap;
         private Boolean noiseReduction;
@@ -496,6 +505,12 @@ public final class PhotoCaptureSettings {
         private String noiseReductionWarning;
         private String ispDigitalGainWarning;
         private String ispAnalogGainWarning;
+
+        /** Selects quality independently from the request's origin. */
+        public Builder qualityProfile(PhotoQualityProfile value) {
+            qualityProfile = value != null ? value : PhotoQualityProfile.DEFAULT;
+            return this;
+        }
 
         public Builder aeExposureDivisor(Integer value) {
             aeExposureDivisor = value;

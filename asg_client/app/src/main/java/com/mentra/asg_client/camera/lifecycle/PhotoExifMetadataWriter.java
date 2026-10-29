@@ -55,13 +55,14 @@ public final class PhotoExifMetadataWriter {
     }
 
     public static void writeImuPayload(String jpegPath, JSONObject imuPayload) throws IOException {
-        try {
+        try (PhotoPersistenceRegistry.Lease persistence = PhotoPersistenceRegistry.joinForBuild(jpegPath)) {
             JSONObject forExif = trimPayloadForExif(imuPayload);
             String json = forExif.toString();
             ExifInterface exif = new ExifInterface(jpegPath);
             exif.setAttribute(ExifInterface.TAG_USER_COMMENT, json);
             exif.saveAttributes();
             Log.d(TAG, "Wrote IMU EXIF to " + jpegPath + " (" + json.length() + " chars)");
+            persistence.complete();
         } catch (JSONException e) {
             throw new IOException("Invalid IMU payload JSON", e);
         }
@@ -87,10 +88,13 @@ public final class PhotoExifMetadataWriter {
                     || !(captureId.startsWith("IMG_") || captureId.startsWith("VID_"))) {
                 return;
             }
-            ExifInterface exif = new ExifInterface(jpegPath);
-            exif.setAttribute(ExifInterface.TAG_IMAGE_UNIQUE_ID, captureId);
-            exif.saveAttributes();
-            Log.d(TAG, "Wrote ImageUniqueID EXIF to " + jpegPath + ": " + captureId);
+            try (PhotoPersistenceRegistry.Lease persistence = PhotoPersistenceRegistry.joinForBuild(jpegPath)) {
+                ExifInterface exif = new ExifInterface(jpegPath);
+                exif.setAttribute(ExifInterface.TAG_IMAGE_UNIQUE_ID, captureId);
+                exif.saveAttributes();
+                Log.d(TAG, "Wrote ImageUniqueID EXIF to " + jpegPath + ": " + captureId);
+                persistence.complete();
+            }
         } catch (Exception e) {
             Log.w(TAG, "Failed to write ImageUniqueID EXIF on " + jpegPath, e);
         }
@@ -98,13 +102,14 @@ public final class PhotoExifMetadataWriter {
 
     /** Copies capture metadata (IMU UserComment + ImageUniqueID) onto a re-encoded copy. */
     public static void copyImuMetadata(String sourcePath, String destPath) {
-        try {
+        try (PhotoPersistenceRegistry.Lease persistence = PhotoPersistenceRegistry.joinForBuild(destPath)) {
             String json = readImuJsonFromJpeg(sourcePath);
             String uniqueId =
                     new ExifInterface(sourcePath).getAttribute(ExifInterface.TAG_IMAGE_UNIQUE_ID);
             boolean hasJson = json != null && !json.isEmpty();
             boolean hasUniqueId = uniqueId != null && !uniqueId.isEmpty();
             if (!hasJson && !hasUniqueId) {
+                persistence.complete();
                 return;
             }
             ExifInterface dest = new ExifInterface(destPath);
@@ -116,6 +121,7 @@ public final class PhotoExifMetadataWriter {
             }
             dest.saveAttributes();
             Log.d(TAG, "Copied capture EXIF from " + sourcePath + " to " + destPath);
+            persistence.complete();
         } catch (IOException e) {
             Log.w(TAG, "Failed to copy capture EXIF metadata", e);
         }

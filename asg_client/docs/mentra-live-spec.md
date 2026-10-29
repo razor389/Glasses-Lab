@@ -69,6 +69,22 @@ For some outbound commands, `B` is a JSON object serialized as a string inside t
 
 ## Core user features
 
+### Shared recording choices in the personal fork
+
+The personal fork stores one atomic recording profile for app starts and physical camera-button
+starts: 720p/1080p, 5/15/30 fps, duration 3/5/10/15/20/30/60/120 minutes or no timer, and local-save
+or phone-offload mode. A local recording can still stop at the single-file or available-space
+limit. Phone mode uses continuous finalized MP4 segments with a bounded glasses backlog and a
+finite phone byte allowance. It requires a fresh authenticated phone readiness grant; unavailable
+readiness declines with an audio cue and never silently changes to local-save mode. A physical
+camera press always stops an active recording, regardless of gallery/readiness state.
+
+The front privacy LED remains latched for the session; the inward status LED lease is renewed
+for long profile recordings. Existing battery monitoring continues across segment rollover.
+Long-duration thermal endurance and the new shared app/button behavior require hardware validation;
+there is no newly added temperature-based recording cutoff. See [the command API](ASG_CLIENT_API.md)
+and [personal media sync](features/personal-media-sync.md) for the negotiated protocol.
+
 ### Pairing and phone connectivity
 
 - Mentra Live pairs with the MentraOS phone app over BLE.
@@ -83,11 +99,36 @@ Mentra Live supports photo capture and video recording from the glasses camera.
 - **Short camera-button press**: takes a photo unless video is currently recording, in which case it stops the recording.
 - **Long camera-button press**: starts video recording unless video is already recording, in which case it stops.
 - Photo/video resolution, FPS, max recording duration, and privacy LED behavior are configurable by commands from the phone app.
+- Phone archival photos can opt into `qualityProfile: "local"` with `save=true`,
+  no webhook, and ordinary photo mode. This selects the button-photo resolution
+  targets and JPEG quality while retaining the SDK request identity. A successful
+  button-photo settings ACK advertises `localPhotoQualityVersion: 1`; companions
+  must check support before using this contract. Existing SDK requests retain
+  their historical quality policy when the option is omitted. Each queued photo
+  keeps its own immutable size and quality settings through later default changes.
 - Captured media is stored locally in package-namespaced storage and exposed to the phone through the camera web server for gallery sync.
 - **Warm photo capture** (camera already running): waits for Camera2's sensor-exposure-start callback, then times the snap near the end of exposure.
 - **Cold photo capture** (camera startup required): plays a short hold-still prep click immediately and every 900ms during camera/ISP startup, then stops the clicks when sensor exposure starts.
 - Single-frame captures use Camera2 `onCaptureStarted` as the hardware anchor. The snap targets 100ms before estimated exposure end (manual duration when fixed; latest preview-metered duration for auto exposure), which keeps it immediate in bright scenes and avoids an early cue during longer low-light exposures. If the completed JPEG reaches `ImageReader` first—as can happen when a HAL delivers `onCaptureStarted` late—the frame callback plays the snap immediately, before extraction or persistence. HDR bursts use the final bracket's exposure/frame callbacks so the user remains still for the whole burst. The final captured callback remains an idempotent last-resort fallback.
 - Prep clicks and snaps use isolated audio overlays so camera feedback does not cut off unrelated device prompts. A failed capture cancels only its own pending click.
+
+The personal development fork additionally offers an opt-in segmented recording
+preview for its independent Android companion. It advertises
+`segmented_recording_version: 1`; a start command can request size-based MP4
+rollover while the camera remains active. The companion offloads and verifies
+each finalized segment over local Wi-Fi before authorizing source reclamation.
+Default segments are 64 MiB with a 256 MiB temporary payload backlog. Session
+duration/byte limits and backlog/free-space guards stop capture without discarding
+unverified media. This mode omits IMU sidecars and thumbnails, retains privacy
+indicators, and does not change ordinary physical-button defaults. Interrupted
+partial segments remain hidden and retained. The front MTK privacy LED stays
+latched on; the separate inward BES RGB white lease is renewed every ten minutes
+for segmented sessions. Local video has no app-level thermal-stop monitor.
+A five-minute 720p trial crossed four rollovers, offloaded/reclaimed earlier
+segments during capture, and automatically finalized five decodable files.
+Frame-perfect/audio continuity, interruption/full-storage recovery, and unplugged
+power/thermal endurance remain open. See [video command contract](ASG_CLIENT_API.md#segmented-recording-personal-fork-preview)
+and [verified sync](features/personal-media-sync.md#segmented-video-preview).
 
 ### Gallery-mode behavior
 
@@ -110,6 +151,25 @@ Mentra Live supports camera/microphone live streaming paths from `asg_client`, i
 ### Local media sync server
 
 `asg_client` runs an embedded HTTP server that lets the phone enumerate, download, ZIP, and delete captured media. This is used for gallery sync and avoids relying on cloud connectivity for local media transfer.
+
+The personal development fork also provides an authenticated, versioned local
+media-sync protocol. Its companion provisions a short-lived token over BLE and
+may reclaim one completed source file after verifying a durable phone copy with
+matching size, generation, and SHA-256. Pending camera writes and interrupted
+receipts retain their originals for recovery. Stock gallery retention remains
+unchanged; the capability is advertised only by the separate fork. See
+[verified personal media sync](features/personal-media-sync.md).
+
+The personal fork can retain one phone-approved Android 11 local-only hotspot
+reservation through an authenticated idle lease, renewed by the companion every
+60 seconds and capped at 180 seconds per renewal. This is separate from transfer
+activity; missed renewals restore normal hotspot idle shutdown. BLE disconnect,
+hotspot stop, token/reservation changes, or ASG restart clear the lease. Generated
+video thumbnails are labeled separately from camera photos, and the local sync
+manifest reports retained live/trash sidecar file counts and bytes even after all
+transferable media has been reclaimed. Sidecars remain until their own verified
+archival policy exists. Personal-fork startup cleanup only removes empty capture
+directories, preserving nonempty orphan metadata and interrupted camera writes.
 
 ### Audio and microphone
 
@@ -139,6 +199,14 @@ When the phone requests the Mentra Live hotspot, `asg_client` creates an Android
 
 ### OTA and updates
 
+Separately installed development forks (`com.mentra.asg_client.thirdparty`) leave
+stock APKs, recovery, and MTK/BES firmware maintenance to the stock installation.
+Their update/reset entry points reject installation requests, and they use
+`/storage/emulated/0/asg_media.thirdparty` for captures so development gallery
+operations cannot affect the stock media library. The host development tool saves
+stock package states and APKs, suspends stock ASG/recovery during a trial, and
+restores them afterward. See [development-on-stock-firmware.md](development-on-stock-firmware.md).
+
 Mentra Live has multiple update surfaces:
 
 - `asg_client` APK/self-update.
@@ -160,6 +228,12 @@ MAC is sourced from BES (`hs_syvr`/`sr_btaddr`), persisted in
 `persist.mentra.live.mac`, and republished to the phone as soon as it is learned.
 
 `asg_client` includes logging, crash/error reporting, incident log buffering, and debug receivers for development and OTA testing. Production behavior should prioritize device stability and useful logs for support while avoiding secrets in logs.
+
+Personal development builds retain local file/console diagnostics but disable
+Sentry auto-initialization and remote crash reporting by application identity.
+Their builds omit the Sentry DSN and disable source/symbol uploads to Mentra's
+project even if the host has Sentry credentials. Explicit photo/stream destinations
+remain available; the independent companion uses local delivery.
 
 ## How Mentra Live works at runtime
 

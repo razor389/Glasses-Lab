@@ -19,6 +19,21 @@ public class PhotoExifMetadataWriterTest {
     @Rule public TemporaryFolder tempFolder = new TemporaryFolder();
 
     @Test
+    public void swallowedCaptureIdFailureRetainsOuterCapturePendingMarker() throws Exception {
+        org.junit.Assume.assumeTrue(com.mentra.asg_client.AsgConstants.PERSONAL_ASG_PACKAGE.equals(
+                com.mentra.asg_client.BuildConfig.APPLICATION_ID));
+        File captureDir = tempFolder.newFolder("IMG_failedExif");
+        File jpeg = new File(captureDir, "base.jpg");
+        assertThat(jpeg.mkdir()).isTrue(); // EXIF cannot rewrite a directory as a JPEG.
+        try (PhotoPersistenceRegistry.Lease capture = PhotoPersistenceRegistry.begin(jpeg.getPath())) {
+            PhotoExifMetadataWriter.writeCaptureIdFromPath(jpeg.getPath());
+            capture.complete(); // Best-effort caller sees no exception, but the nested phase failed.
+        }
+        assertThat(PhotoPersistenceRegistry.isCaptureActive("IMG_failedExif/base.jpg")).isFalse();
+        assertThat(PhotoPersistenceRegistry.hasPendingWrite(jpeg)).isTrue();
+    }
+
+    @Test
     public void writeAndReadImuRoundtrip() throws Exception {
         File jpeg = tempFolder.newFile("photo.jpg");
         PhotoExifMetadataWriter.writeMinimalJpegForTest(jpeg);

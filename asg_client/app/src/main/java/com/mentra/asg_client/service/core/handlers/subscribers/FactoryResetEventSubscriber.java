@@ -5,6 +5,7 @@ import android.content.pm.PackageInfo;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import com.mentra.asg_client.DevelopmentSafety;
 import com.mentra.asg_client.io.media.core.MediaCaptureService;
 import com.mentra.asg_client.io.ota.helpers.OtaHelper;
 import com.mentra.asg_client.io.ota.utils.OtaConstants;
@@ -157,6 +158,10 @@ public final class FactoryResetEventSubscriber implements IPeripheralBus.McuEven
      * </ol>
      */
     private void handleFactoryReset() {
+        if (!DevelopmentSafety.allowsStockMaintenance(resolveContext())) {
+            Log.w(TAG, "Development build: use the host restore tool to return to stock");
+            return;
+        }
         if (!resetInProgress.compareAndSet(false, true)) {
             Log.w(TAG, "🏭 Factory reset already in progress - ignoring duplicate cs_fcrst");
             return;

@@ -5,6 +5,7 @@ import android.util.Log;
 import com.mentra.asg_client.AsgConstants;
 import com.mentra.asg_client.camera.model.PhotoCaptureSettings;
 import com.mentra.asg_client.camera.policy.PhotoMode;
+import com.mentra.asg_client.camera.policy.PhotoQualityProfile;
 import com.mentra.asg_client.camera.policy.PhotoSizeTier;
 import com.mentra.asg_client.io.file.core.FileManager;
 import com.mentra.asg_client.io.media.core.MediaCaptureService;
@@ -209,6 +210,17 @@ public class PhotoCommandHandler extends BaseMediaCommandHandler {
             String size = PhotoMode.captureSize(mode, requestedSize);
             if (!data.has("mode")) {
                 Log.w(TAG, "📸 take_photo BLE payload missing mode field; defaulting to " + mode);
+            }
+            try {
+                PhotoQualityProfile.validateRequest(data);
+            } catch (IllegalArgumentException invalidProfile) {
+                MediaCaptureService captureService = serviceManager.getMediaCaptureService();
+                if (captureService != null) {
+                    captureService.sendPhotoErrorResponse(
+                            requestId, "INVALID_QUALITY_PROFILE", invalidProfile.getMessage());
+                }
+                logCommandResult("take_photo", false, invalidProfile.getMessage());
+                return false;
             }
             Log.i(TAG, "📸 Mentra Live take_photo mode: " + mode);
             if (!size.equals(requestedSize)) {

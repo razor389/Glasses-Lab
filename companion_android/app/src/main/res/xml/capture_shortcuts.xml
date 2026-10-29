@@ -1,0 +1,20 @@
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="glasses_photo" android:enabled="true"
+        android:icon="@drawable/ic_quick_photo" android:shortcutShortLabel="@string/shortcut_photo_label"
+        android:shortcutLongLabel="@string/shortcut_photo_long_label">
+        <intent android:action="dev.ross.glasses.PHOTO" android:targetPackage="dev.ross.glasses"
+            android:targetClass="dev.ross.glasses.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="glasses_video" android:enabled="true"
+        android:icon="@drawable/ic_quick_video" android:shortcutShortLabel="@string/shortcut_video_label"
+        android:shortcutLongLabel="@string/shortcut_video_long_label">
+        <intent android:action="dev.ross.glasses.VIDEO" android:targetPackage="dev.ross.glasses"
+            android:targetClass="dev.ross.glasses.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="glasses_audio" android:enabled="true"
+        android:icon="@drawable/ic_quick_audio" android:shortcutShortLabel="@string/shortcut_audio_label"
+        android:shortcutLongLabel="@string/shortcut_audio_long_label">
+        <intent android:action="dev.ross.glasses.AUDIO" android:targetPackage="dev.ross.glasses"
+            android:targetClass="dev.ross.glasses.MainActivity" />
+    </shortcut>
+</shortcuts>

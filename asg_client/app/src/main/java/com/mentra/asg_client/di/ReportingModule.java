@@ -5,6 +5,7 @@ import android.os.Build;
 import android.os.UserManager;
 import android.util.Log;
 import com.mentra.asg_client.BuildConfig;
+import com.mentra.asg_client.DevelopmentSafety;
 import com.mentra.asg_client.reporting.CrashHandler;
 import com.mentra.asg_client.reporting.core.ReportManager;
 import com.mentra.asg_client.reporting.providers.ConsoleReportProvider;
@@ -25,8 +26,10 @@ public class ReportingModule {
 
         ReportManager manager = ReportManager.getInstance(context);
 
-        // Add Sentry provider (will gracefully disable itself if DSN not configured)
-        manager.addProvider(new SentryReportProvider());
+        // Personal forks use local diagnostics even if the host has Sentry credentials.
+        if (DevelopmentSafety.allowsStockMaintenance(context)) {
+            manager.addProvider(new SentryReportProvider());
+        }
 
         // Add File provider for local crash logs (always enabled, ADB accessible)
         manager.addProvider(new FileReportProvider());

@@ -7,8 +7,11 @@ import static org.mockito.Mockito.verify;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.os.Looper;
+import android.os.SystemClock;
 import androidx.test.core.app.ApplicationProvider;
+import com.mentra.asg_client.AsgConstants;
 import com.mentra.asg_client.io.network.interfaces.NetworkStateListener;
 import java.time.Duration;
 import org.junit.Before;
@@ -53,6 +56,49 @@ public class BaseNetworkManagerHotspotActivityTest {
         verify(listener, times(1)).onHotspotStateChanged(true);
         verify(listener, times(1)).onHotspotStateChanged(false);
         assertThat(manager.isHotspotEnabled()).isFalse();
+    }
+
+    @Test
+    public void boundedPersonalLeaseHoldsHotspotWithoutRefreshingTransferActivity() {
+        manager = new TestNetworkManager(contextForPackage(AsgConstants.PERSONAL_ASG_PACKAGE));
+        long deadline = SystemClock.elapsedRealtime() + 180_000;
+        manager.setLabSyncIdleLeaseProvider(() -> SystemClock.elapsedRealtime() < deadline);
+        manager.markStarted();
+
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(150));
+        assertThat(manager.stopCount).isZero();
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(40));
+        assertThat(manager.stopCount).isEqualTo(1);
+    }
+
+    @Test
+    public void revokedLeaseRestoresExistingIdlePolicyOnNextCheck() {
+        manager = new TestNetworkManager(contextForPackage(AsgConstants.PERSONAL_ASG_PACKAGE));
+        boolean[] leased = {true};
+        manager.setLabSyncIdleLeaseProvider(() -> leased[0]);
+        manager.markStarted();
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(150));
+        assertThat(manager.stopCount).isZero();
+
+        leased[0] = false;
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10));
+        assertThat(manager.stopCount).isEqualTo(1);
+    }
+
+    @Test
+    public void stockBuildCannotHoldIdleHotspotWithPersonalLease() {
+        manager = new TestNetworkManager(contextForPackage(AsgConstants.STOCK_ASG_PACKAGE));
+        manager.setLabSyncIdleLeaseProvider(() -> true);
+        manager.markStarted();
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(140));
+        assertThat(manager.stopCount).isEqualTo(1);
+    }
+
+    private Context contextForPackage(String packageName) {
+        return new ContextWrapper(ApplicationProvider.getApplicationContext()) {
+            @Override public Context getApplicationContext() { return this; }
+            @Override public String getPackageName() { return packageName; }
+        };
     }
 
     private static final class TestNetworkManager extends BaseNetworkManager {

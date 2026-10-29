@@ -18,11 +18,35 @@ import org.robolectric.annotation.Config;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 33)
 public class OtaCommandHandlerTest {
+    private OtaCommandHandler stockHandler(OtaHelper ota, ICommunicationManager communication) {
+        return new OtaCommandHandler(ota, communication, true);
+    }
+
+    @Test
+    public void developmentBuild_rejectsOtaBeforeCallingHelper() throws Exception {
+        OtaHelper ota = mock(OtaHelper.class);
+        ICommunicationManager communication = mock(ICommunicationManager.class);
+        OtaCommandHandler handler = new OtaCommandHandler(ota, communication, false);
+        assertThat(handler.handleCommand("ota_start",
+                new JSONObject().put("ota_version_url", "https://example.com/manifest.json"))).isFalse();
+        verify(ota, never()).startOtaFromPhone(any());
+        verify(communication).sendOtaStatus(any());
+    }
+
+    @Test
+    public void developmentBuild_rejectsLegacyOtaApproval() throws Exception {
+        OtaHelper ota = mock(OtaHelper.class);
+        OtaCommandHandler handler = new OtaCommandHandler(ota, mock(ICommunicationManager.class), false);
+        assertThat(handler.handleCommand("ota_update_response", new JSONObject()
+                .put("accepted", true).put("ota_version_url", "https://example.com/manifest.json"))).isFalse();
+        verify(ota, never()).startOtaFromPhone(any());
+    }
+
 
     @Test
     public void getSupportedCommandTypes_includesPhoneOtaCommands() {
         OtaCommandHandler handler =
-                new OtaCommandHandler(mock(OtaHelper.class), mock(ICommunicationManager.class));
+                stockHandler(mock(OtaHelper.class), mock(ICommunicationManager.class));
 
         assertThat(handler.getSupportedCommandTypes())
                 .containsExactlyInAnyOrder(
@@ -35,7 +59,7 @@ public class OtaCommandHandlerTest {
         // URL-less ota_start (older phone SDKs) must be refused rather than guessed at.
         OtaHelper otaHelper = mock(OtaHelper.class);
         OtaCommandHandler handler =
-                new OtaCommandHandler(otaHelper, mock(ICommunicationManager.class));
+                stockHandler(otaHelper, mock(ICommunicationManager.class));
 
         boolean handled = handler.handleCommand("ota_start", new JSONObject());
 
@@ -47,7 +71,7 @@ public class OtaCommandHandlerTest {
     public void handleOtaStart_withVersionUrl_passesUrlToHelper() throws Exception {
         OtaHelper otaHelper = mock(OtaHelper.class);
         OtaCommandHandler handler =
-                new OtaCommandHandler(otaHelper, mock(ICommunicationManager.class));
+                stockHandler(otaHelper, mock(ICommunicationManager.class));
         String versionUrl = "https://example.com/staging_live_version.json";
 
         boolean handled =
@@ -62,7 +86,7 @@ public class OtaCommandHandlerTest {
     public void handleOtaStart_withHttpVersionUrl_passesUrlToHelper() throws Exception {
         OtaHelper otaHelper = mock(OtaHelper.class);
         OtaCommandHandler handler =
-                new OtaCommandHandler(otaHelper, mock(ICommunicationManager.class));
+                stockHandler(otaHelper, mock(ICommunicationManager.class));
         String versionUrl = "http://localhost:8000/staging_live_version.json";
 
         boolean handled =
@@ -77,7 +101,7 @@ public class OtaCommandHandlerTest {
     public void handleOtaStart_withEmptyVersionUrl_rejectsCommand() throws Exception {
         OtaHelper otaHelper = mock(OtaHelper.class);
         OtaCommandHandler handler =
-                new OtaCommandHandler(otaHelper, mock(ICommunicationManager.class));
+                stockHandler(otaHelper, mock(ICommunicationManager.class));
 
         boolean handled =
                 handler.handleCommand("ota_start", new JSONObject().put("ota_version_url", " "));
@@ -90,7 +114,7 @@ public class OtaCommandHandlerTest {
     public void handleOtaStart_withNonHttpVersionUrl_rejectsCommand() throws Exception {
         OtaHelper otaHelper = mock(OtaHelper.class);
         OtaCommandHandler handler =
-                new OtaCommandHandler(otaHelper, mock(ICommunicationManager.class));
+                stockHandler(otaHelper, mock(ICommunicationManager.class));
 
         boolean handled =
                 handler.handleCommand(
@@ -107,7 +131,7 @@ public class OtaCommandHandlerTest {
         JSONObject state = new JSONObject().put("type", "ota_status");
         when(otaHelper.getOtaSessionState()).thenReturn(state);
 
-        OtaCommandHandler handler = new OtaCommandHandler(otaHelper, communicationManager);
+        OtaCommandHandler handler = stockHandler(otaHelper, communicationManager);
 
         boolean handled = handler.handleCommand("ota_query_status", new JSONObject());
 
@@ -117,7 +141,7 @@ public class OtaCommandHandlerTest {
 
     @Test
     public void handleOtaQueryStatus_returnsFalseWhenHelperMissing() throws Exception {
-        OtaCommandHandler handler = new OtaCommandHandler(null, mock(ICommunicationManager.class));
+        OtaCommandHandler handler = stockHandler(null, mock(ICommunicationManager.class));
 
         boolean handled = handler.handleCommand("ota_query_status", new JSONObject());
 

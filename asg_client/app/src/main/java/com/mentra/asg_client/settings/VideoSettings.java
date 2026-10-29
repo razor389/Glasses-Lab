@@ -9,11 +9,29 @@ public class VideoSettings {
     public final int width;
     public final int height;
     public final int fps;
+    public final SegmentedVideoOptions segmented;
+    public final RecordingProfile recordingProfile;
+    public final String recordingOrigin;
+    public final String recordingGrantId;
 
     public VideoSettings(int width, int height, int fps) {
+        this(width, height, fps, null);
+    }
+
+    /** Recording-specific transfer policy is never persisted as a camera default. */
+    public VideoSettings(int width, int height, int fps, SegmentedVideoOptions segmented) {
+        this(width, height, fps, segmented, null, null, null);
+    }
+
+    public VideoSettings(int width, int height, int fps, SegmentedVideoOptions segmented,
+            RecordingProfile profile, String origin, String grantId) {
         this.width = width;
         this.height = height;
         this.fps = fps;
+        this.segmented = segmented;
+        this.recordingProfile = profile;
+        this.recordingOrigin = origin;
+        this.recordingGrantId = grantId;
     }
 
     /** Create default settings (1080p at 30fps) */

@@ -2,6 +2,9 @@ package com.mentra.asg_client.service.core.handlers;
 
 import android.content.Context;
 import android.util.Log;
+import com.mentra.asg_client.AsgConstants;
+import com.mentra.asg_client.camera.lifecycle.VideoSegmentFiles;
+import com.mentra.asg_client.settings.SegmentedVideoOptions;
 import com.mentra.asg_client.io.file.core.FileManager;
 import com.mentra.asg_client.io.media.core.MediaCaptureService;
 import com.mentra.asg_client.service.core.constants.BatteryConstants;
@@ -134,6 +137,12 @@ public class VideoCommandHandler extends BaseMediaCommandHandler {
                 return false;
             }
 
+            if (data.optBoolean("useRecordingProfile", false)) {
+                RecordingProfileStarter.start(serviceManager, requestId, data.getString("profileRevision"),
+                        "app", data.optBoolean("sound", true));
+                return true;
+            }
+
             // Parse video settings if provided. Any field that is missing or <= 0
             // falls back to the saved button-video default rather than being
             // dropped, so partial overrides (e.g. an fps-only request from a
@@ -191,7 +200,22 @@ public class VideoCommandHandler extends BaseMediaCommandHandler {
 
             // Start recording with settings
             boolean save = data.optBoolean("save", false);
-            // Capture light is mandatory for privacy; ignore any caller-supplied flash value.
+            if (data.optBoolean("segmented", false)) {
+                if (context == null || !AsgConstants.PERSONAL_ASG_PACKAGE.equals(context.getPackageName())
+                        || android.os.Build.VERSION.SDK_INT < 26 || !save) {
+                    throw new IllegalArgumentException("Segmented recording requires the personal fork and save=true");
+                }
+                VideoSegmentFiles.validateRequestId(requestId);
+                if (captureService.getSegmentedTerminalStatus(requestId) != null) {
+                    throw new IllegalArgumentException("Use a new requestId for each segmented session");
+                }
+                SegmentedVideoOptions options = new SegmentedVideoOptions(
+                        data.has("segmentMaxBytes") ? data.getLong("segmentMaxBytes") : AsgConstants.VIDEO_SEGMENT_DEFAULT_BYTES,
+                        data.has("maxBacklogBytes") ? data.getLong("maxBacklogBytes") : AsgConstants.VIDEO_SEGMENT_DEFAULT_BACKLOG_BYTES,
+                        data.getLong("maxSessionBytes"));
+                VideoSettings base = videoSettings != null ? videoSettings : VideoSettings.getDefault();
+                videoSettings = new VideoSettings(base.width, base.height, base.fps, options);
+            }
             boolean flash = true;
             boolean sound = data.optBoolean("sound", true);
             // Optional auto-stop after N minutes; 0 (the default) means record until
@@ -250,7 +274,12 @@ public class VideoCommandHandler extends BaseMediaCommandHandler {
                 return false;
             }
 
-            if (!captureService.isRecordingVideo()) {
+            if (!captureService.isRecordingVideo() && !captureService.isVideoRecordingActiveOrStarting()) {
+                JSONObject terminal = captureService.getSegmentedTerminalStatus(requestId);
+                if (terminal != null) {
+                    streamingManager.sendVideoRecordingStatusResponse(requestId, terminal.optBoolean("success"), terminal);
+                    return true;
+                }
                 Log.d(TAG, "Not currently recording, ignoring stop command");
                 streamingManager.sendVideoRecordingStatusResponse(
                         requestId, false, "not_recording", null);
@@ -295,7 +324,20 @@ public class VideoCommandHandler extends BaseMediaCommandHandler {
                 return false;
             }
 
+            JSONObject profileStatus = captureService.getRecordingProfileStatus(requestId);
+            if (profileStatus != null) {
+                streamingManager.sendVideoRecordingStatusResponse(profileStatus.optString("sessionId"),
+                        profileStatus.optBoolean("success", true), profileStatus);
+                return true;
+            }
             boolean isRecording = captureService.isRecordingVideo();
+            if (!isRecording) {
+                JSONObject terminal = captureService.getSegmentedTerminalStatus(requestId);
+                if (terminal != null) {
+                    streamingManager.sendVideoRecordingStatusResponse(requestId, terminal.optBoolean("success"), terminal);
+                    return true;
+                }
+            }
             try {
                 JSONObject status = new JSONObject();
                 status.put("status", "recording_status");

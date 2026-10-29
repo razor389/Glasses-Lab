@@ -1,0 +1,14 @@
+pluginManagement {
+    repositories { google(); mavenCentral(); gradlePluginPortal() }
+}
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+        maven { url = uri('../local/asg-dev/phone-maven') }
+    }
+}
+rootProject.name = 'GlassesLab'
+include ':app', ':sdk', ':lc3', ':silero'
+project(':silero').projectDir = file('../mobile/modules/bluetooth-sdk/android/silero')

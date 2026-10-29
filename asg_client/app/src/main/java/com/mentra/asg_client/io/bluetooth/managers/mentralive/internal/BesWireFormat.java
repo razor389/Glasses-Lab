@@ -443,7 +443,7 @@ public class BesWireFormat {
      */
     public static byte[] formatMessageForTransmission(String jsonData, K900LengthCodec.Endian endian) {
         try {
-            Log.d("BesWireFormat", "🔄 Formatting message: " + jsonData);
+            Log.d("BesWireFormat", "🔄 Formatting JSON message");
 
             if (isBinaryProtocolActive()) {
                 return formatBinaryMessageForTransmission(jsonData);
@@ -725,7 +725,7 @@ public class BesWireFormat {
         String payloadStr;
         try {
             payloadStr = new String(payload, StandardCharsets.UTF_8);
-            Log.d("BesWireFormat", "Extracted payload: " + payloadStr);
+            Log.d("BesWireFormat", "Extracted JSON payload (" + payloadStr.length() + " characters)");
         } catch (Exception e) {
             Log.e("BesWireFormat", "Error converting payload to string", e);
             return null;
@@ -733,7 +733,7 @@ public class BesWireFormat {
 
         // Check if it's valid JSON
         if (!payloadStr.startsWith("{") || !payloadStr.endsWith("}")) {
-            Log.d("BesWireFormat", "Payload is not valid JSON: " + payloadStr);
+            Log.d("BesWireFormat", "Payload is not valid JSON");
             return null;
         }
 
@@ -762,7 +762,7 @@ public class BesWireFormat {
                 return expandCompactWireJson(json);
             }
         } catch (JSONException e) {
-            Log.e("BesWireFormat", "Error parsing JSON payload: " + e.getMessage(), e);
+            Log.e("BesWireFormat", "Error parsing JSON payload");
             return null;
         }
     }
@@ -792,7 +792,7 @@ public class BesWireFormat {
 
             // If looks like JSON but not C-wrapped, use the full formatting function
             if (originalData.startsWith("{") && !isCWrappedJson(originalData)) {
-                Log.d("BesWireFormat", "📦 JSON DATA BEFORE C-WRAPPING: " + originalData);
+                Log.d("BesWireFormat", "📦 Preparing JSON C-wrapper");
                 byte[] formattedData = formatMessageForTransmission(originalData);
 
                 // Debug log the formatting results if needed
@@ -813,7 +813,7 @@ public class BesWireFormat {
                 return formattedData;
             } else {
                 // Otherwise just apply protocol formatting
-                Log.d("BesWireFormat", "📦 Data already C-wrapped or not JSON: " + originalData);
+                Log.d("BesWireFormat", "📦 Data already C-wrapped or not JSON");
                 Log.d("BesWireFormat", "Formatting data with K900 protocol (adding ##...)");
                 return packDataCommand(data, CMD_TYPE_STRING);
             }

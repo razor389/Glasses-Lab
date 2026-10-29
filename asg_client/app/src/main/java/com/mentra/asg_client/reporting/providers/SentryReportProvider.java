@@ -5,6 +5,7 @@ import android.os.Build;
 import android.util.Log;
 
 import com.mentra.asg_client.BuildConfig;
+import com.mentra.asg_client.DevelopmentSafety;
 import com.mentra.asg_client.reporting.config.SentryConfig;
 import com.mentra.asg_client.reporting.core.IReportProvider;
 import com.mentra.asg_client.reporting.core.ReportData;
@@ -30,6 +31,14 @@ public class SentryReportProvider implements IReportProvider {
     @Override
     public boolean initialize(Context context) {
         Log.i(TAG, "Initializing Sentry report provider...");
+
+        // Forks keep local diagnostics without depending on Mentra's reporting service.
+        // Check identity before configuration or SDK startup, even if a DSN is supplied.
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) {
+            isEnabled = false;
+            Log.i(TAG, "Remote crash reporting disabled for this application identity");
+            return false;
+        }
         
         if (isInitialized) {
             Log.w(TAG, "Sentry already initialized");
@@ -247,4 +256,4 @@ public class SentryReportProvider implements IReportProvider {
     
     // Note: Data filtering is now handled centrally by DataFilter utility
     // Provider-specific filtering methods have been removed to avoid duplication
-} 
+}

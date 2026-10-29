@@ -179,6 +179,22 @@ enum class PhotoMode(val value: String) {
     }
 }
 
+/** DEFAULT preserves SDK sizing; LOCAL uses the glasses' archival photo sizing and quality. */
+enum class PhotoQualityProfile(val value: String) {
+    DEFAULT("default"),
+    LOCAL("local");
+
+    companion object {
+        @JvmStatic
+        fun fromValue(value: Any?): PhotoQualityProfile =
+            when (value) {
+                null, DEFAULT.value -> DEFAULT
+                LOCAL.value -> LOCAL
+                else -> throw IllegalArgumentException("Invalid qualityProfile. Expected default or local.")
+            }
+    }
+}
+
 data class PhotoRequest @JvmOverloads constructor(
     val requestId: String = generatedCameraRequestId("photo"),
     val size: PhotoSize,
@@ -203,7 +219,16 @@ data class PhotoRequest @JvmOverloads constructor(
     val mode: PhotoMode = PhotoMode.PHOTO,
     /** `direct` disables BLE fallback; `ble` skips direct upload; `auto` tries both. */
     val transferMethod: String = "auto",
+    /** LOCAL requires ordinary photo mode, save=true, and no upload destination. */
+    val qualityProfile: PhotoQualityProfile = PhotoQualityProfile.DEFAULT,
 ) {
+    init {
+        require(qualityProfile != PhotoQualityProfile.LOCAL ||
+            (mode == PhotoMode.PHOTO && save && webhookUrl.isEmpty())) {
+            "Local photo quality requires photo mode, save=true, and an empty webhookUrl."
+        }
+    }
+
     companion object {
         private fun transferMethodFromValue(value: Any?): String {
             if (value == null) return "auto"
@@ -254,6 +279,7 @@ data class PhotoRequest @JvmOverloads constructor(
                 sound = boolValue(values, "sound") ?: true,
                 mode = PhotoMode.fromValue(stringValue(values, "mode")),
                 transferMethod = transferMethodFromValue(values["transferMethod"]),
+                qualityProfile = PhotoQualityProfile.fromValue(values["qualityProfile"]),
                 exposureTimeNs = exposureTimeNs,
                 iso = iso,
                 aeExposureDivisor = aeDivisor,
@@ -265,6 +291,14 @@ data class PhotoRequest @JvmOverloads constructor(
                 ispDigitalGain = ispDigitalGain,
                 ispAnalogGain = ispAnalogGain,
             )
+        }
+
+        /** Appends only an explicit opt-in so legacy SDK requests retain their wire shape. */
+        @JvmStatic
+        fun appendQualityProfile(json: JSONObject, request: PhotoRequest) {
+            if (request.qualityProfile != PhotoQualityProfile.DEFAULT) {
+                json.put("qualityProfile", request.qualityProfile.value)
+            }
         }
 
         /** Adds optional scan-mode tuning fields to a `take_photo` JSON payload. */
@@ -320,6 +354,29 @@ data class RgbLedRequest @JvmOverloads constructor(
     val count: Int,
 )
 
+/**
+ * Bounded local segments for a companion that verifies and reclaims completed files.
+ * Check the glasses' segmented_recording_version capability before requesting this mode.
+ * Byte limits include only the glasses recording; the companion must reserve publication space.
+ */
+data class SegmentedVideoOptions(
+    val maxSessionBytes: Long,
+    val segmentMaxBytes: Long = 64L * 1024 * 1024,
+    val maxBacklogBytes: Long = 256L * 1024 * 1024,
+) {
+    init {
+        require(segmentMaxBytes in 8L * 1024 * 1024..256L * 1024 * 1024) {
+            "Video segments must be between 8 and 256 MiB."
+        }
+        require(maxBacklogBytes in 3 * segmentMaxBytes..4L * 1024 * 1024 * 1024) {
+            "Video backlog must hold at least three segments and at most 4 GiB."
+        }
+        require(maxSessionBytes >= segmentMaxBytes) {
+            "Video session allowance must hold at least one segment."
+        }
+    }
+}
+
 data class VideoRecordingRequest(
     val requestId: String,
     val save: Boolean,
@@ -330,6 +387,11 @@ data class VideoRecordingRequest(
     val fps: Int = 0,
     // Optional auto-stop timer in minutes; 0 = record until stopped/interrupted.
     val maxRecordingTimeMinutes: Int = 0,
+    // Opt-in personal-fork recording mode; null preserves ordinary single-file recording.
+    val segmented: SegmentedVideoOptions? = null,
+    // Consume the same persisted atomic profile used by the physical camera button.
+    val useRecordingProfile: Boolean = false,
+    val profileRevision: String? = null,
 )
 
 data class VideoRecordingStatusEvent(
@@ -341,6 +403,16 @@ data class VideoRecordingStatusEvent(
     val details: String? get() = stringValue(values, "details")
     val timestamp: Long get() = longValue(values, "timestamp") ?: System.currentTimeMillis()
     val data: Map<String, Any>? get() = stringMapValue(values["data"])
+    val sessionId: String? get() = stringValue(values, "sessionId") ?: data?.let { stringValue(it, "sessionId") }
+    val segmentCount: Int? get() = numberValue(values, "segmentCount") ?: data?.let { numberValue(it, "segmentCount") }
+    val stopReason: String? get() = stringValue(values, "stopReason") ?: data?.let { stringValue(it, "stopReason") }
+    val origin: String? get() = stringValue(values, "origin") ?: data?.let { stringValue(it, "origin") }
+    val segmented: Boolean? get() = boolValue(values, "segmented") ?: data?.let { boolValue(it, "segmented") }
+    val grantId: String? get() = stringValue(values, "grantId") ?: data?.let { stringValue(it, "grantId") }
+    val recording: Boolean? get() = boolValue(values, "recording") ?: data?.let { boolValue(it, "recording") }
+    val durationMs: Long? get() = longValue(values, "duration_ms") ?: data?.let { longValue(it, "duration_ms") }
+    val profile: UnifiedRecordingProfile? get() =
+        stringMapValue(values["profile"] ?: data?.get("profile"))?.let(UnifiedRecordingProfile::fromMap)
 }
 
 data class MediaUploadEvent(

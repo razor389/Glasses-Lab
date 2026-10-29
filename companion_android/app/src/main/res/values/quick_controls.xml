@@ -1,0 +1,11 @@
+<resources>
+    <string name="quick_photo_label">Glasses photo</string>
+    <string name="quick_video_label">Glasses video</string>
+    <string name="quick_audio_label">Glasses audio</string>
+    <string name="shortcut_photo_label">Take photo</string>
+    <string name="shortcut_video_label">Record video</string>
+    <string name="shortcut_audio_label">Record audio</string>
+    <string name="shortcut_photo_long_label">Take a photo with your glasses</string>
+    <string name="shortcut_video_long_label">Start or stop glasses video</string>
+    <string name="shortcut_audio_long_label">Start or stop glasses audio</string>
+</resources>

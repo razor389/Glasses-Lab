@@ -626,6 +626,17 @@ public class AsgClientServiceManager {
                 Log.d(TAG, "📡 Picture request listener set");
 
                 cameraServer.setHttpActivityListener(networkManager::updateHttpActivity);
+                cameraServer.setRecordingProfileProvider(
+                        () -> asgSettings != null ? asgSettings.getRecordingProfile() : null,
+                        () -> mediaCaptureService != null && mediaCaptureService.isVideoRecordingActiveOrStarting());
+                cameraServer.setConsumedRecordingGrantProvider(grant -> asgSettings != null
+                        && asgSettings.isRecordingGrantConsumed(grant.grantId, grant.sessionId));
+                networkManager.setLabSyncIdleLeaseProvider(
+                        () -> cameraServer != null && cameraServer.hasLabSyncIdleLease());
+                if (bluetoothManager instanceof K900BluetoothManager) {
+                    cameraServer.observeLabPhonePresence(
+                            ((K900BluetoothManager) bluetoothManager).getLinkStateMachine());
+                }
                 Log.d(TAG, "📡 HTTP activity listener set");
 
                 // Wire active recording provider so sync/download skip in-progress and

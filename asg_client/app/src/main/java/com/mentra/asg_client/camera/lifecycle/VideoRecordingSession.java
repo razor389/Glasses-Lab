@@ -6,11 +6,14 @@ import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CaptureRequest;
 import android.media.MediaRecorder;
 import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.util.Size;
 import android.view.Surface;
 
 import com.mentra.asg_client.io.storage.StorageManager;
+import com.mentra.asg_client.AsgConstants;
+import com.mentra.asg_client.io.media.core.RecordedVideoIntegrityChecker;
 import com.mentra.asg_client.sensors.ImuRecorder;
 import com.mentra.asg_client.settings.VideoSettings;
 
@@ -43,6 +46,7 @@ public final class VideoRecordingSession {
         void onRecordingProgress(String videoId, long durationMs);
         void onRecordingStopped(String videoId, String filePath);
         void onRecordingError(String videoId, String errorMessage);
+        default void onSegmentedRecordingStopped(String videoId, int count, String reason, boolean success) {}
     }
 
     /** Cross-cutting integration points back into the camera service. */
@@ -67,6 +71,7 @@ public final class VideoRecordingSession {
     private final Handler backgroundHandler;
     private final Executor callbackExecutor;
     private final Hooks hooks;
+    private final java.util.function.Predicate<String> videoVerifier;
 
     private Callback callback;
 
@@ -79,15 +84,25 @@ public final class VideoRecordingSession {
     private VideoSettings pendingSettings;
     private long recordingStartTime;
     private Timer recordingTimer;
+    private VideoSegmentFiles segments;
+    private File nextSegmentFile;
+    private int segmentIndex;
+    private boolean segmentedTerminalSent;
 
     public VideoRecordingSession(Context context,
                                  Handler backgroundHandler,
                                  Executor callbackExecutor,
                                  Hooks hooks) {
+        this(context, backgroundHandler, callbackExecutor, hooks, RecordedVideoIntegrityChecker::verify);
+    }
+
+    VideoRecordingSession(Context context, Handler backgroundHandler, Executor callbackExecutor,
+            Hooks hooks, java.util.function.Predicate<String> videoVerifier) {
         this.context = context;
         this.backgroundHandler = backgroundHandler;
         this.callbackExecutor = callbackExecutor;
         this.hooks = hooks;
+        this.videoVerifier = videoVerifier;
     }
 
     public void setCallback(Callback callback) { this.callback = callback; }
@@ -114,6 +129,10 @@ public final class VideoRecordingSession {
         currentVideoId = videoId;
         currentVideoPath = filePath;
         pendingSettings = settings;
+        segments = null;
+        nextSegmentFile = null;
+        segmentIndex = 0;
+        segmentedTerminalSent = false;
         return true;
     }
 
@@ -167,20 +186,43 @@ public final class VideoRecordingSession {
 
         long maxFileSize = storageManager.getMaxVideoFileSize();
         int maxDuration = storageManager.getMaxVideoDuration(bitRate);
+        if (pendingSettings != null && pendingSettings.segmented != null) {
+            if (android.os.Build.VERSION.SDK_INT < 26
+                    || !AsgConstants.PERSONAL_ASG_PACKAGE.equals(context.getPackageName())) {
+                throw new IOException("Segmented recording is unavailable on this device");
+            }
+            segments = new VideoSegmentFiles(new File(currentVideoPath), pendingSettings.segmented);
+            String stopReason = segments.nextFileStopReason(new File(currentVideoPath), maxFileSize);
+            if (stopReason != null && !"session_byte_limit".equals(stopReason)) {
+                throw new IOException("Cannot start segmented recording: " + stopReason);
+            }
+            maxFileSize = pendingSettings.segmented.segmentMaxBytes;
+            // The phone's session timer remains in MediaCaptureService. Rotating files must not
+            // inherit the single-file 30-minute storage estimate.
+            maxDuration = 0;
+        }
         try {
             mediaRecorder.setMaxFileSize(maxFileSize);
             Log.d(TAG, "Set max file size: " + (maxFileSize / (1024 * 1024)) + " MB");
         } catch (IllegalArgumentException e) {
+            if (segments != null) throw new IOException("Cannot configure segment file limit", e);
             Log.w(TAG, "Failed to set max file size: " + e.getMessage());
         }
         try {
             mediaRecorder.setMaxDuration(maxDuration);
             Log.d(TAG, "Set max duration: " + (maxDuration / 1000) + " seconds");
         } catch (IllegalArgumentException e) {
+            if (segments != null) throw new IOException("Cannot configure session duration", e);
             Log.w(TAG, "Failed to set max duration: " + e.getMessage());
         }
 
         mediaRecorder.setOnErrorListener((mr, what, extra) -> {
+            if (segments != null) {
+                backgroundHandler.post(() -> {
+                    if (mr == mediaRecorder && !segmentedTerminalSent) failSegmentedRecording("recorder_error");
+                });
+                return;
+            }
             Log.e(TAG, "MediaRecorder error: what=" + what + ", extra=" + extra);
             isRecording = false;
             String errorMsg = VideoRecorderPolicy.mediaRecorderErrorMessage(what);
@@ -203,6 +245,10 @@ public final class VideoRecordingSession {
         });
 
         mediaRecorder.setOnInfoListener((mr, what, extra) -> {
+            if (segments != null) {
+                backgroundHandler.post(() -> onSegmentedRecorderInfo(mr, what));
+                return;
+            }
             Log.d(TAG, "MediaRecorder info: what=" + what + ", extra=" + extra);
             if (VideoRecorderPolicy.isInfoMaxDurationReached(what)) {
                 Log.w(TAG, "Max duration reached, stopping recording");
@@ -249,7 +295,7 @@ public final class VideoRecordingSession {
                 isRecording = true;
                 recordingStartTime = System.currentTimeMillis();
 
-                ImuRecorder imu = hooks.ensureImuRecorder();
+                ImuRecorder imu = segments == null ? hooks.ensureImuRecorder() : null;
                 if (imu != null) {
                     imu.startRecording(currentVideoPath);
                     imu.setVideoStartAnchor(videoStartElapsedRealtimeNs);
@@ -268,6 +314,7 @@ public final class VideoRecordingSession {
                         @Override
                         public void run() {
                             if (!isRecording || callback == null) return;
+                            if (segments != null) backgroundHandler.post(() -> checkSegmentedLimits());
                             long duration = System.currentTimeMillis() - recordingStartTime;
                             final String tickId = currentVideoId;
                             callbackExecutor.execute(() -> {
@@ -297,6 +344,15 @@ public final class VideoRecordingSession {
      * informed via {@link Hooks#onSessionTerminated()} so it can close the camera.
      */
     public void stopRecording(String videoIdToStop) {
+        stopRecording(videoIdToStop, "user_requested");
+    }
+
+    /** Stop a whole recording session; file rollover never resets its duration or identity. */
+    public void stopRecording(String videoIdToStop, String reason) {
+        if (segments != null && Looper.myLooper() != backgroundHandler.getLooper()) {
+            backgroundHandler.post(() -> stopRecording(videoIdToStop, reason));
+            return;
+        }
         if (!isRecording) {
             Log.w(TAG, "Stop recording requested, but not currently recording.");
             if (videoIdToStop != null) {
@@ -310,6 +366,11 @@ public final class VideoRecordingSession {
             if (videoIdToStop != null) {
                 notifyError(videoIdToStop, "Video ID mismatch");
             }
+            return;
+        }
+
+        if (segments != null) {
+            stopSegmentedRecording(reason == null ? "user_requested" : reason);
             return;
         }
 
@@ -360,6 +421,101 @@ public final class VideoRecordingSession {
             }
             hooks.onSessionTerminated();
         }
+    }
+
+    private void onSegmentedRecorderInfo(MediaRecorder recorder, int what) {
+        if (!isRecording || segmentedTerminalSent || recorder != mediaRecorder) return;
+        try {
+            if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_APPROACHING) {
+                if (nextSegmentFile != null) return;
+                String reason = segments.nextFileStopReason(new File(currentVideoPath),
+                        StorageManager.getInstance(context).getMaxVideoFileSize());
+                if (reason != null) {
+                    stopSegmentedRecording(reason);
+                    return;
+                }
+                nextSegmentFile = segments.nextFile(segmentIndex + 1);
+                recorder.setNextOutputFile(nextSegmentFile);
+            } else if (what == MediaRecorder.MEDIA_RECORDER_INFO_NEXT_OUTPUT_FILE_STARTED) {
+                if (nextSegmentFile == null) throw new IOException("Unexpected segment rollover");
+                File closed = new File(currentVideoPath);
+                currentVideoPath = nextSegmentFile.getAbsolutePath();
+                nextSegmentFile = null;
+                segmentIndex++;
+                publishSegment(closed);
+            } else if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED) {
+                stopSegmentedRecording("segment_limit");
+            } else if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
+                stopSegmentedRecording("max_duration");
+            }
+        } catch (Exception error) {
+            Log.e(TAG, "Segment rollover failed; retaining partial output", error);
+            failSegmentedRecording("segment_error");
+        }
+    }
+
+    private void checkSegmentedLimits() {
+        if (!isRecording || segmentedTerminalSent || segments == null) return;
+        long reserve = AsgConstants.VIDEO_SEGMENT_STOP_HEADROOM_BYTES;
+        if (segments.backlogBytes() >= segments.options.maxBacklogBytes - reserve) {
+            stopSegmentedRecording("backlog_full");
+        } else if (segments.totalBytes(new File(currentVideoPath), nextSegmentFile)
+                >= segments.options.maxSessionBytes - reserve) {
+            stopSegmentedRecording("session_byte_limit");
+        } else if (StorageManager.getInstance(context).getMaxVideoFileSize() <= reserve) {
+            stopSegmentedRecording("storage_low");
+        }
+    }
+
+    private void publishSegment(File closed) throws IOException {
+        if (!videoVerifier.test(closed.getAbsolutePath())) {
+            throw new IOException("Segment failed video integrity validation");
+        }
+        segments.publishVerified(closed);
+    }
+
+    private void stopSegmentedRecording(String reason) {
+        if (segmentedTerminalSent) return;
+        boolean success = false;
+        try {
+            mediaRecorder.stop();
+            mediaRecorder.reset();
+            publishSegment(new File(currentVideoPath));
+            // A queued NEXT_OUTPUT_FILE_STARTED may not have reached our handler before stop.
+            // Once stop returns both files are closed; publish them in sequence if data exists.
+            if (nextSegmentFile != null && nextSegmentFile.length() > 0) publishSegment(nextSegmentFile);
+            success = true;
+        } catch (Exception error) {
+            Log.e(TAG, "Segment finalization failed; preserving partials", error);
+            reason = "finalization_error";
+        } finally {
+            finishSegmentedRecording(reason, success);
+        }
+    }
+
+    private void failSegmentedRecording(String reason) {
+        if (segmentedTerminalSent) return;
+        try { if (mediaRecorder != null) mediaRecorder.reset(); }
+        catch (RuntimeException error) { Log.w(TAG, "Could not reset segmented recorder", error); }
+        finishSegmentedRecording(reason, false);
+    }
+
+    private void finishSegmentedRecording(String reason, boolean success) {
+        if (segmentedTerminalSent) return;
+        segmentedTerminalSent = true;
+        isRecording = false;
+        if (recordingTimer != null) { recordingTimer.cancel(); recordingTimer = null; }
+        // Remove only an unused, empty reservation. Nonempty partial footage is retained.
+        if (nextSegmentFile != null && nextSegmentFile.length() == 0) {
+            if (!nextSegmentFile.exists() || nextSegmentFile.delete()) nextSegmentFile.getParentFile().delete();
+        }
+        final String id = currentVideoId;
+        final int count = segments.finalizedCount();
+        final Callback terminalCallback = callback;
+        if (terminalCallback != null) {
+            callbackExecutor.execute(() -> terminalCallback.onSegmentedRecordingStopped(id, count, reason, success));
+        }
+        hooks.onSessionTerminated();
     }
 
     /** Release the encoder + surface. Called from CameraNeoService.closeCamera(). */

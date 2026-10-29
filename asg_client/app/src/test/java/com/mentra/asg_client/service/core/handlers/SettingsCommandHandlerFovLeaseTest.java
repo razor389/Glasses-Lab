@@ -85,6 +85,20 @@ public class SettingsCommandHandlerFovLeaseTest {
         assertThat(lastResponse.optBoolean("stale", false)).isFalse();
     }
 
+    @Test
+    public void buttonSizeAckReportsEffectiveTierAndLocalQualityCapability() throws Exception {
+        AsgSettings settings = mock(AsgSettings.class);
+        when(serviceManager.getAsgSettings()).thenReturn(settings);
+        when(settings.getButtonPhotoSize()).thenReturn("high");
+        assertThat(handler.handleCommand("button_photo_setting", new JSONObject()
+                .put("request_id", "photo-defaults-1").put("size", "high"))).isTrue();
+        JSONObject ack = responses.get(responses.size() - 1);
+        assertThat(ack.getString("setting")).isEqualTo("button_photo");
+        assertThat(ack.getString("size")).isEqualTo("high");
+        assertThat(ack.getInt("localPhotoQualityVersion")).isEqualTo(1);
+        org.mockito.Mockito.verify(settings, org.mockito.Mockito.never()).clearButtonPhotoCaptureTuning();
+    }
+
     private static JSONObject overrideRequest(String leaseId) throws Exception {
         return new JSONObject()
                 .put("request_id", "set-1")

@@ -182,7 +182,7 @@ public class CommandProcessor {
     public void processJsonCommand(JSONObject json) {
         // processJsonCommand() started
 
-        Log.d(TAG, "📊 processJsonCommand() started" + json.toString());
+        Log.d(TAG, "📊 processJsonCommand() started");
         try {
             // Wake-flagged command ("W":1): grant a fresh awake window so its follow-up work
             // survives the 12s screen timeout — the BES power-key pulse for W=1 only fires
@@ -212,7 +212,7 @@ public class CommandProcessor {
             // Extracting command data from JSON
             CommandData commandData = extractCommandData(json);
             if (commandData == null) {
-                Log.w(TAG, "⚠️ No command data extracted - processing complete" + json.toString());
+                Log.w(TAG, "⚠️ No command data extracted - processing complete");
                 return;
             }
 
@@ -221,9 +221,7 @@ public class CommandProcessor {
                     "📊 Command data extracted - Type: "
                             + commandData.type()
                             + ", MessageID: "
-                            + commandData.messageId()
-                            + ", Data: "
-                            + commandData.data());
+                            + commandData.messageId());
 
             // Check for duplicate message ID
             if (isDuplicateMessage(commandData.messageId())) {
@@ -339,9 +337,7 @@ public class CommandProcessor {
             Log.i(
                     TAG,
                     "PHOTO PIPELINE [ASG 1/3] Received take_photo on glasses mode="
-                            + mode
-                            + ": "
-                            + commandData.data());
+                            + mode);
         }
 
         // Try modern command handler first

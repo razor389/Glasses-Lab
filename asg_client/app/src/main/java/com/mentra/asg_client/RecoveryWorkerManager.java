@@ -61,6 +61,10 @@ public class RecoveryWorkerManager {
     }
 
     public void initialize() {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) {
+            Log.i(TAG, "Development build: leaving stock recovery and updater untouched");
+            return;
+        }
         registerPackageInstallReceiver();
         workerExecutor.execute(this::ensureRecoveryWorker);
     }

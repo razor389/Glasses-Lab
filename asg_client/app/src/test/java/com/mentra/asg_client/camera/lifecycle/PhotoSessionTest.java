@@ -52,6 +52,47 @@ public class PhotoSessionTest {
     }
 
     @Test
+    public void localQualityPreservesSourceAndUsesButtonJpegQuality() throws Exception {
+        PhotoCaptureSettings local = PhotoCaptureSettings.fromTakePhotoJson(
+                new JSONObject().put("qualityProfile", "local"));
+        PhotoSession session = new PhotoSession(mockConfiguredCameraHooks());
+        AtomicReference<JSONObject> configured = new AtomicReference<>();
+        CameraNeoService.PhotoCaptureCallback callback = mock(CameraNeoService.PhotoCaptureCallback.class);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            configured.set(invocation.getArgument(0));
+            return null;
+        }).when(callback).onPhotoConfigured(any(JSONObject.class));
+        activateQueuedRequest(session, new QueuedPhotoRequest(
+                "/tmp/local.jpg", "high", true, true, null, null, local, callback));
+        assertThat(session.photoRequestFromSdk()).isTrue();
+        assertThat(session.photoRequestUsesSdkQuality()).isFalse();
+        assertThat(session.previewJpegQuality()).isEqualTo(95);
+        session.notifyPhotoConfigured(new android.util.Size(3264, 2448), session.previewJpegQuality());
+        assertThat(configured.get().getString("source")).isEqualTo("sdk");
+        assertThat(configured.get().getString("qualityProfile")).isEqualTo("local");
+        assertThat(configured.get().getInt("quality")).isEqualTo(95);
+    }
+
+    @Test
+    public void qualityChangeReopensAndWarmPredictionMatchesQueuedCapture() throws Exception {
+        PhotoSession.Hooks hooks = mockConfiguredCameraHooks();
+        PhotoSession session = new PhotoSession(hooks);
+        PhotoCaptureSettings local = PhotoCaptureSettings.fromTakePhotoJson(
+                new JSONObject().put("qualityProfile", "local"));
+        activateQueuedRequest(session, new QueuedPhotoRequest(
+                "/tmp/sdk.jpg", "high", false, true, null, null));
+        assertThat(session.previewJpegQuality()).isEqualTo(85);
+        assertThat(session.willReuseConfiguredCamera("high", true, null, local)).isFalse();
+        QueuedPhotoRequestQueue.getInstance().offer(new QueuedPhotoRequest(
+                "/tmp/local.jpg", "high", false, true, null, null, local, null));
+        session.dispatchNextPhotoRequest();
+        verify(hooks).closeCamera();
+        verify(hooks).openCameraInternal("/tmp/local.jpg", false);
+        assertThat(session.willReuseConfiguredCamera("high", true, null, local)).isTrue();
+        assertThat(session.willReuseConfiguredCamera("high", true, null)).isFalse();
+    }
+
+    @Test
     public void dispatchNextPhotoRequest_idleWithConfiguredCamera_loadsRequestAndPosts()
             throws Exception {
         PhotoSession.Hooks hooks = mockConfiguredCameraHooks();

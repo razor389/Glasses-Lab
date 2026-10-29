@@ -50,6 +50,7 @@ import com.mentra.asg_client.io.media.utils.MediaStorage;
 import com.mentra.asg_client.sensors.ImuRecorder;
 import com.mentra.asg_client.service.system.core.SystemControllerFactory;
 import com.mentra.asg_client.settings.VideoSettings;
+import com.mentra.asg_client.settings.SegmentedVideoOptions;
 import com.mentra.asg_client.utils.WakeLockManager;
 
 import org.json.JSONObject;
@@ -428,6 +429,9 @@ public class CameraNeoService extends LifecycleService {
         void onRecordingStopped(String videoId, String filePath);
 
         void onRecordingError(String videoId, String errorMessage);
+
+        /** Terminal segmented status follows final integrity validation; count is contiguous. */
+        default void onSegmentedRecordingStopped(String videoId, int segmentCount, String reason, boolean success) {}
     }
 
     /**
@@ -616,6 +620,12 @@ public class CameraNeoService extends LifecycleService {
                 public void onRecordingError(String videoId, String errorMessage) {
                     VideoRecordingCallback cb = VideoRecordingSession.pendingVideoCallback();
                     if (cb != null) cb.onRecordingError(videoId, errorMessage);
+                }
+
+                @Override
+                public void onSegmentedRecordingStopped(String videoId, int count, String reason, boolean success) {
+                    VideoRecordingCallback cb = VideoRecordingSession.pendingVideoCallback();
+                    if (cb != null) cb.onSegmentedRecordingStopped(videoId, count, reason, success);
                 }
             };
 
@@ -1075,6 +1085,11 @@ public class CameraNeoService extends LifecycleService {
             intent.putExtra(EXTRA_VIDEO_SETTINGS + "_width", settings.width);
             intent.putExtra(EXTRA_VIDEO_SETTINGS + "_height", settings.height);
             intent.putExtra(EXTRA_VIDEO_SETTINGS + "_fps", settings.fps);
+            if (settings.segmented != null) {
+                intent.putExtra("segmentMaxBytes", settings.segmented.segmentMaxBytes);
+                intent.putExtra("maxBacklogBytes", settings.segmented.maxBacklogBytes);
+                intent.putExtra("maxSessionBytes", settings.segmented.maxSessionBytes);
+            }
         }
         context.startForegroundService(intent);
     }
@@ -1086,9 +1101,15 @@ public class CameraNeoService extends LifecycleService {
      * @param videoId ID of the video recording session to stop (must match active session)
      */
     public static void stopVideoRecording(Context context, String videoId) {
+        stopVideoRecording(context, videoId, "user_requested");
+    }
+
+    /** Preserve the session-level stop cause across the camera service boundary. */
+    public static void stopVideoRecording(Context context, String videoId, String reason) {
         Intent intent = new Intent(context, CameraNeoService.class);
         intent.setAction(ACTION_STOP_VIDEO_RECORDING);
         intent.putExtra(EXTRA_VIDEO_ID, videoId);
+        intent.putExtra("stopReason", reason);
         context.startForegroundService(intent);
     }
 
@@ -1130,6 +1151,13 @@ public class CameraNeoService extends LifecycleService {
                                 (width > 0 && height > 0 && fps > 0)
                                         ? new VideoSettings(width, height, fps)
                                         : null;
+                        if (settings != null && intent.hasExtra("segmentMaxBytes")) {
+                            settings = new VideoSettings(width, height, fps,
+                                    new SegmentedVideoOptions(
+                                            intent.getLongExtra("segmentMaxBytes", 0),
+                                            intent.getLongExtra("maxBacklogBytes", 0),
+                                            intent.getLongExtra("maxSessionBytes", 0)));
+                        }
                         if (settings != null) {
                             Log.d(TAG, "Using custom video settings: " + settings);
                         }
@@ -1139,7 +1167,7 @@ public class CameraNeoService extends LifecycleService {
                     }
                 case ACTION_STOP_VIDEO_RECORDING:
                     String videoIdToStop = intent.getStringExtra(EXTRA_VIDEO_ID);
-                    videoSession.stopRecording(videoIdToStop);
+                    videoSession.stopRecording(videoIdToStop, intent.getStringExtra("stopReason"));
                     SystemControllerFactory.get(this).setEisEnabled(false);
                     break;
                 case ACTION_WARM_UP_CAMERA:
@@ -1497,15 +1525,15 @@ public class CameraNeoService extends LifecycleService {
                     return;
                 }
 
-                boolean fromSdk = photoSession.photoRequestFromSdk();
+                boolean sdkQuality = photoSession.photoRequestUsesSdkQuality();
                 String requestedSizeTier = photoSession.photoRequestSizeTier();
                 Log.d(
                         TAG,
-                        fromSdk
-                                ? "SDK photo - using optimized resolution"
-                                : "Button photo - using high quality resolution");
+                        sdkQuality
+                                ? "Using SDK photo resolution policy"
+                                : "Using local photo resolution policy");
                 Size chosenJpeg =
-                        CameraOpener.resolveJpegSize(jpegSizes, fromSdk, requestedSizeTier);
+                        CameraOpener.resolveJpegSize(jpegSizes, sdkQuality, requestedSizeTier);
                 if (chosenJpeg == null) {
                     photoSession.notifyHostPhotoError("Camera doesn't support JPEG format");
                     stopSelf();

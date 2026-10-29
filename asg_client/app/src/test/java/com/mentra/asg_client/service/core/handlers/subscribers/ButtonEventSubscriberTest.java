@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.mentra.asg_client.io.bluetooth.interfaces.ICompanionTransport;
+import com.mentra.asg_client.audio.AudioAssets;
 import com.mentra.asg_client.io.bluetooth.managers.K900BluetoothManager;
 import com.mentra.asg_client.io.bluetooth.managers.mentralive.internal.LinkStateMachine;
 import com.mentra.asg_client.io.hardware.interfaces.IHardwareManager;
@@ -62,6 +63,34 @@ public class ButtonEventSubscriberTest {
 
     private void shortPress() {
         subscriber.onMcuEvent(new ButtonEvent(ButtonEvent.Type.CAMERA_SHORT_PRESS));
+    }
+
+    @Test public void stopAlwaysBypassesGalleryGateForPresentPhone() {
+        linkState.serialReady();
+        linkState.phonePresenceReported(true);
+        when(captureService.isRecordingVideo()).thenReturn(true);
+        shortPress();
+        verify(captureService).stopVideoRecording();
+        verify(captureService, never()).takePhotoLocally(anyString(), anyBoolean(), anyBoolean());
+    }
+
+    @Test public void startupStopBypassesGalleryAndReadiness() {
+        linkState.serialReady();
+        linkState.phonePresenceReported(true);
+        when(captureService.isVideoRecordingActiveOrStarting()).thenReturn(true);
+        subscriber.onMcuEvent(new ButtonEvent(ButtonEvent.Type.CAMERA_LONG_PRESS));
+        verify(captureService).stopVideoRecording();
+    }
+
+    @Test public void invalidUnifiedProfileDeclinesWithCueInsteadOfLegacyFallback() {
+        when(serviceManager.getAsgSettings().getRecordingProfile()).thenThrow(new IllegalStateException("invalid profile"));
+        IHardwareManager hardware = mock(IHardwareManager.class);
+        when(hardware.supportsAudioPlayback()).thenReturn(true);
+        ButtonEventSubscriber guarded = new ButtonEventSubscriber(serviceManager, hardware, mock(IStateManager.class));
+        guarded.onMcuEvent(new ButtonEvent(ButtonEvent.Type.CAMERA_LONG_PRESS));
+        verify(hardware).playAudioAsset(AudioAssets.DISCONNECTED);
+        verify(captureService, never()).startVideoRecording(org.mockito.ArgumentMatchers.any(), anyBoolean(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
     }
 
     @Test

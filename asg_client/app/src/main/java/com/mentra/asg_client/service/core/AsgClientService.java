@@ -898,6 +898,7 @@ public class AsgClientService extends Service implements NetworkStateListener, T
     @Override
     public void onHotspotStateChanged(boolean isEnabled) {
         Log.i(TAG, "📡 Hotspot state changed: " + (isEnabled ? "ENABLED" : "DISABLED"));
+        if (!isEnabled) clearLabSyncAuthority();
 
         // Send hotspot status update to phone
         try {
@@ -1031,7 +1032,19 @@ public class AsgClientService extends Service implements NetworkStateListener, T
             Log.d(TAG, "🎯 Enabling swipe volume control on Bluetooth connection");
             handleSwipeVolumeControl(false);
         } else {
-            Log.d(TAG, "📶 Bluetooth disconnected - no additional actions needed");
+            // K900's TransportListener describes the UART, not phone BLE presence. The camera
+            // server observes its BES-reported PhonePresence separately.
+            if (serviceInitializer != null && serviceInitializer.getServiceManager() != null
+                    && !(serviceInitializer.getServiceManager().getBluetoothManager() instanceof K900BluetoothManager)) {
+                clearLabSyncAuthority();
+            }
+        }
+    }
+
+    private void clearLabSyncAuthority() {
+        if (serviceInitializer != null && serviceInitializer.getServiceManager() != null) {
+            var cameraServer = serviceInitializer.getServiceManager().getCameraServer();
+            if (cameraServer != null) cameraServer.configureLabSync(null, null, null);
         }
     }
 

@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import com.mentra.asg_client.DevelopmentSafety;
 import com.mentra.asg_client.service.system.interfaces.ISystemController;
 import com.mentra.asg_client.service.utils.SysProp;
 
@@ -106,6 +107,10 @@ public class MentraLiveSystemController implements ISystemController {
 
     @Override
     public void setWifiAdb(boolean enable) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) {
+            Log.i(TAG, "Development build: keeping the host debugging connection unchanged");
+            return;
+        }
         Log.d(TAG, "Setting Wi-Fi ADB to: " + (enable ? "ENABLED" : "DISABLED"));
         Intent nn = new Intent();
         nn.putExtra("cmd", "wifiadb");
@@ -169,6 +174,10 @@ public class MentraLiveSystemController implements ISystemController {
 
     @Override
     public void installSystemOta(String otaPath) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) {
+            Log.w(TAG, "Development build: refusing MTK firmware installation");
+            return;
+        }
         if (otaPath == null || otaPath.isEmpty()) {
             Log.e(TAG, "installSystemOta: path cannot be null or empty");
             return;
@@ -193,6 +202,10 @@ public class MentraLiveSystemController implements ISystemController {
 
     @Override
     public void uninstallPackage(String packageName) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) {
+            Log.w(TAG, "Development build: refusing package removal");
+            return;
+        }
         Intent nn = new Intent();
         nn.putExtra("cmd", "uninstall");
         nn.putExtra("pkname", packageName);
@@ -206,6 +219,10 @@ public class MentraLiveSystemController implements ISystemController {
 
     @Override
     public void injectAdbCommand(String shellCommand) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) {
+            Log.w(TAG, "Development build: use the host ADB tools for privileged shell commands");
+            return;
+        }
         Intent nn = new Intent();
         nn.putExtra("cmd", "adb");
         nn.putExtra("value", "adb && " + shellCommand);

@@ -5,6 +5,7 @@ import static org.robolectric.Shadows.shadowOf;
 
 import android.app.Application;
 import android.content.Intent;
+import android.content.ContextWrapper;
 import androidx.test.core.app.ApplicationProvider;
 import java.util.List;
 import org.junit.Test;
@@ -16,11 +17,20 @@ import org.robolectric.annotation.Config;
 @RunWith(RobolectricTestRunner.class)
 @Config(application = Application.class, sdk = 33)
 public class MentraLiveSystemControllerTest {
+    private MentraLiveSystemController stockController(Application app) {
+        return new MentraLiveSystemController(new ContextWrapper(app) {
+            @Override
+            public String getPackageName() {
+                return "com.mentra.asg_client";
+            }
+        });
+    }
+
 
     @Test
     public void setSystemTime_emitsSetTimeBroadcastWithMillis() {
         Application app = ApplicationProvider.getApplicationContext();
-        MentraLiveSystemController controller = new MentraLiveSystemController(app);
+        MentraLiveSystemController controller = stockController(app);
 
         controller.setSystemTime(1_700_000_000_000L);
 
@@ -34,7 +44,7 @@ public class MentraLiveSystemControllerTest {
     @Test
     public void reboot_emitsRebootBroadcast() {
         Application app = ApplicationProvider.getApplicationContext();
-        MentraLiveSystemController controller = new MentraLiveSystemController(app);
+        MentraLiveSystemController controller = stockController(app);
 
         controller.reboot();
 
@@ -44,7 +54,7 @@ public class MentraLiveSystemControllerTest {
     @Test
     public void setWifiAdb_emitsWifiAdbBroadcast() {
         Application app = ApplicationProvider.getApplicationContext();
-        MentraLiveSystemController controller = new MentraLiveSystemController(app);
+        MentraLiveSystemController controller = stockController(app);
 
         controller.setWifiAdb(true);
 

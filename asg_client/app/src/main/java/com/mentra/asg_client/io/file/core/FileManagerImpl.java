@@ -1,6 +1,7 @@
 package com.mentra.asg_client.io.file.core;
 
 import com.mentra.asg_client.AsgConstants;
+import com.mentra.asg_client.BuildConfig;
 import com.mentra.asg_client.logging.Logger;
 import com.mentra.asg_client.io.file.managers.FileOperationsManager;
 import com.mentra.asg_client.io.file.managers.FileSecurityManager;
@@ -36,10 +37,17 @@ public class FileManagerImpl implements FileManager {
     // Dependencies
     private final Logger logger;
     private final File baseDirectory;
+    private final boolean preserveNonemptyCaptures;
     
     public FileManagerImpl(File baseDirectory, Logger logger) {
+        this(baseDirectory, logger, AsgConstants.PERSONAL_ASG_PACKAGE.equals(BuildConfig.APPLICATION_ID));
+    }
+
+    /** Explicit policy is package-private so both stock and fork startup behavior can be verified. */
+    FileManagerImpl(File baseDirectory, Logger logger, boolean preserveNonemptyCaptures) {
         this.baseDirectory = baseDirectory;
         this.logger = logger;
+        this.preserveNonemptyCaptures = preserveNonemptyCaptures;
         
         // Initialize focused managers
         this.operationsManager = new FileOperationsManager(baseDirectory, logger);
@@ -51,7 +59,7 @@ public class FileManagerImpl implements FileManager {
 
         logger.info(TAG, "FileManagerImpl initialized with base directory: " + baseDirectory.getAbsolutePath());
 
-        // Clean up orphaned/empty capture folders left by crashes or failed recordings
+        // The personal fork retains nonempty captures until exact verified-copy reclamation.
         cleanupOrphanedCaptures();
     }
     
@@ -772,7 +780,8 @@ public class FileManagerImpl implements FileManager {
      * Remove capture folders that are empty or contain no primary media file
      * (no base.jpg, base.mp4, or any other image/video). These are left behind
      * when the app crashes mid-recording, when MediaRecorder.stop() fails, or
-     * when the process is OOM-killed.
+     * when the process is OOM-killed. The personal fork removes only genuinely
+     * empty directories: sidecars and failed writes still require explicit recovery.
      */
     private void cleanupOrphanedCaptures() {
         try {
@@ -789,6 +798,13 @@ public class FileManagerImpl implements FileManager {
                 if (!name.startsWith("IMG_") && !name.startsWith("VID_") && !name.startsWith("BUFFER_")) continue;
 
                 File[] contents = dir.listFiles();
+                if (preserveNonemptyCaptures) {
+                    // A receipt for a primary does not authorize erasing remaining IMU/RAW,
+                    // brackets, partial media, or persistence markers on the next startup.
+                    // Single-directory deletion fails safely if a writer adds a new child.
+                    if (contents != null && contents.length == 0 && dir.delete()) cleaned++;
+                    continue;
+                }
                 if (contents == null || contents.length == 0) {
                     // Empty directory
                     dir.delete();

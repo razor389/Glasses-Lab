@@ -88,7 +88,9 @@ Implications for development:
 
 ### Development on Mentra Live
 
-Mentra Live ships with `com.mentra.asg_client` as a **system app** signed with Mentra's release key. To run your own build, `./scripts/dev-setup.sh` installs a fork alongside it under a separate package (`com.mentra.asg_client.thirdparty`), disables the stock app, and makes your build the default launcher; `./scripts/restore-stock.sh` reverses this.
+Mentra Live ships with `com.mentra.asg_client` as a **system app** signed with Mentra's release key. You can build a fork alongside it as `com.mentra.asg_client.thirdparty`. The development workflow backs up the installed APKs and package states, runs a timed trial, and restores stock automatically. Use `--keep-running` to leave a tested fork active.
+
+See [Customize Mentra Live on stock firmware](docs/development-on-stock-firmware.md) for Windows build commands, device switching, restoration, and customization points. Development builds isolate captured media and disable stock recovery, firmware-update, APK-installation, and reset paths.
 
 ### Phone App Compatibility
 
@@ -114,24 +116,24 @@ adb devices
 ### Installing Your Custom Build of asg_client
 
 ```bash
-./scripts/dev-setup.sh
+./scripts/dev-setup.sh --serial YOUR_USB_SERIAL
 ```
 
 This script will:
 
-1. Build your debug APK
-2. Install it as `com.mentra.asg_client.thirdparty`, disable the stock app, and set your build as the default launcher
-3. Grant all required permissions
+1. Validate your already-built development APK and save stock/recovery APK backups and package states
+2. Install it as `com.mentra.asg_client.thirdparty`, temporarily disable stock ASG and recovery, and grant development permissions
+3. Observe the fork for 60 seconds, save logs, and restore stock unless `--keep-running` was supplied
 
 **Warning:** Your fork will not receive OTA updates from Mentra.
 
-### Restoring Stock Firmware
+### Restoring the Stock App
 
 ```bash
-./scripts/restore-stock.sh
+./scripts/restore-stock.sh --serial YOUR_USB_SERIAL
 ```
 
-This removes your custom build and restores the factory app.
+This disables your custom build, preserves its data, and restores the saved stock app and recovery states. It does not download updates or change firmware.
 
 ### Build Notes
 

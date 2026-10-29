@@ -2,6 +2,8 @@ package com.mentra.asg_client.io.media.utils;
 
 import android.content.Context;
 import android.util.Log;
+import com.mentra.asg_client.AsgConstants;
+import com.mentra.asg_client.DevelopmentSafety;
 
 import java.io.File;
 
@@ -37,7 +39,8 @@ public final class MediaStorage {
      * complete (or skipped) by the time this returns.
      */
     public static File getMediaRoot(Context context) {
-        File root = new File(MEDIA_ROOT_PATH);
+        File root = new File(DevelopmentSafety.allowsStockMaintenance(context)
+                ? MEDIA_ROOT_PATH : AsgConstants.DEVELOPMENT_MEDIA_ROOT_PATH);
         if (!migrationAttempted) {
             synchronized (MIGRATION_LOCK) {
                 if (!migrationAttempted) {
@@ -48,7 +51,7 @@ public final class MediaStorage {
                                         root,
                                         context.getPackageName());
                         if (moved > 0) {
-                            Log.i(TAG, "Migrated " + moved + " media entries to " + MEDIA_ROOT_PATH);
+                            Log.i(TAG, "Migrated " + moved + " media entries to " + root);
                         }
                     } catch (Exception e) {
                         // Never block media capture on migration problems; unmigrated legacy
@@ -60,7 +63,7 @@ public final class MediaStorage {
             }
         }
         if (!root.exists() && !root.mkdirs()) {
-            Log.e(TAG, "Failed to create media root: " + MEDIA_ROOT_PATH);
+            Log.e(TAG, "Failed to create media root: " + root);
         }
         return root;
     }

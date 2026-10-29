@@ -98,13 +98,12 @@ public class CommandParser {
             String jsonStr = new String(data, offset, length, StandardCharsets.UTF_8);
             JSONObject jsonObject = new JSONObject(jsonStr);
             
-            // Log truncated JSON for debugging (first 100 characters)
-            String truncatedJson = jsonStr.substring(0, Math.min(100, jsonStr.length()));
-            Log.d(TAG, "✅ Successfully parsed " + source + " JSON: " + truncatedJson + "...");
+            // Payloads can contain local sync authority and Wi-Fi credentials, even when truncated.
+            Log.d(TAG, "✅ Successfully parsed " + source + " JSON (" + length + " bytes)");
             
             return jsonObject;
         } catch (JSONException e) {
-            Log.e(TAG, "❌ JSON parsing error for " + source + ": " + e.getMessage());
+            Log.e(TAG, "❌ JSON parsing error for " + source);
             return null;
         } catch (Exception e) {
             Log.e(TAG, "❌ Unexpected error parsing " + source + " JSON", e);
@@ -164,15 +163,15 @@ public class CommandParser {
      */
     public JSONObject parseJsonString(String jsonString) {
         if (!isValidJson(jsonString)) {
-            Log.w(TAG, "Invalid JSON string provided: " + jsonString);
+            Log.w(TAG, "Invalid JSON string provided");
             return null;
         }
         
         try {
             return new JSONObject(jsonString);
         } catch (JSONException e) {
-            Log.e(TAG, "Error parsing JSON string", e);
+            Log.e(TAG, "Error parsing JSON string");
             return null;
         }
     }
-} 
+}

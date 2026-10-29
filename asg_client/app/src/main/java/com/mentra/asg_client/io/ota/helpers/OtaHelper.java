@@ -17,6 +17,7 @@ import org.greenrobot.eventbus.EventBus;
 import org.greenrobot.eventbus.Subscribe;
 import org.greenrobot.eventbus.ThreadMode;
 import com.mentra.asg_client.AsgConstants;
+import com.mentra.asg_client.DevelopmentSafety;
 import com.mentra.asg_client.events.BatteryStatusEvent;
 import com.mentra.asg_client.di.hilt.AsgClientEntryPoint;
 import com.mentra.asg_client.io.ota.events.DownloadProgressEvent;
@@ -307,6 +308,7 @@ public class OtaHelper {
     }
 
     public void deleteDownloadedArtifactForType(String updateType) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) return;
         if (UPDATE_TYPE_MTK.equals(updateType)) {
             deleteFileIfExists(OtaConstants.MTK_FIRMWARE_PATH, "MTK firmware artifact");
             deleteFileIfExists(OtaConstants.MTK_BACKUP_PATH, "MTK backup artifact");
@@ -417,6 +419,10 @@ public class OtaHelper {
      * the glasses act on is phone-supplied and exact-pin shaped; there is no baked fallback.
      */
     public void startOtaFromPhone(String versionJsonUrl) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) {
+            Log.w(TAG, "Development build: refusing OTA");
+            return;
+        }
         String requestedVersionJsonUrl = requireVersionJsonUrl(versionJsonUrl);
         if (requestedVersionJsonUrl == null) {
             // OtaCommandHandler already rejects URL-less ota_start; this is a defensive guard.
@@ -465,6 +471,10 @@ public class OtaHelper {
      * @param versionJsonUrl URL to fetch the version JSON from (http, https)
      */
     public void startVersionCheckWithUrl(Context context, String versionJsonUrl) {
+        if (!DevelopmentSafety.allowsStockMaintenance(this.context)) {
+            Log.w(TAG, "Development build: refusing OTA version check");
+            return;
+        }
         String resolvedVersionJsonUrl = requireVersionJsonUrl(versionJsonUrl);
         if (resolvedVersionJsonUrl == null) {
             Log.e(TAG, "Refusing OTA version check without a manifest URL");
@@ -1189,6 +1199,7 @@ public class OtaHelper {
      * Called on service startup so adb/IDE installs refresh recovery's reinstall target.
      */
     public static void ensureRecoveryBackupIfNeeded(Context context) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) return;
         try {
             Context appContext = context.getApplicationContext();
             PackageManager pm = appContext.getPackageManager();
@@ -1409,6 +1420,7 @@ public class OtaHelper {
     }
 
     public static void notifyRecoveryInstallCompleted(Context context) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) return;
         Intent intent = new Intent(OtaConstants.RECOVERY_INSTALL_COMPLETED);
         intent.setPackage(OtaConstants.RECOVERY_PACKAGE);
         context.sendBroadcast(intent, OtaConstants.RECOVERY_CONTROL_PERMISSION);
@@ -1446,6 +1458,7 @@ public class OtaHelper {
     // Modified to accept custom filename for different apps. Single download attempt — no retries.
 
     public boolean downloadApk(String urlStr, JSONObject json, Context context, String filename) {
+        if (!DevelopmentSafety.allowsStockMaintenance(this.context)) return false;
         try {
             boolean success = downloadApkInternal(urlStr, json, context, filename);
             if (success) {
@@ -1617,6 +1630,10 @@ public class OtaHelper {
      *         that armed restart-guard state must roll it back when this returns false.
      */
     public static boolean installApk(Context context, String apkPath) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) {
+            Log.w(TAG, "Development build: refusing APK installation");
+            return false;
+        }
         try {
             Log.d(TAG, "Starting installation process for APK at: " + apkPath);
 
@@ -1667,6 +1684,7 @@ public class OtaHelper {
     }
 
     public void checkOlderApkFile(Context context) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) return;
         PackageManager pm = context.getPackageManager();
         PackageInfo info = null;
         try {
@@ -1721,6 +1739,7 @@ public class OtaHelper {
     }
 
     public boolean reinstallApkFromBackup() {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) return false;
         String backupPath = OtaConstants.BACKUP_APK_PATH;
         Log.d(TAG, "Attempting to reinstall APK from backup at: " + backupPath);
 
@@ -1755,6 +1774,7 @@ public class OtaHelper {
 
     // Add a method to save the backup APK
     public boolean saveBackupApk(String sourceApkPath) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) return false;
         try {
             // Create backup directory if it doesn't exist
             File backupDir = new File(context.getFilesDir(), OtaConstants.BASE_DIR);
@@ -2780,6 +2800,7 @@ public class OtaHelper {
      *         or there is no active session (caller should fall back to legacy path).
      */
     public boolean continueSessionAfterStepComplete(Context context) {
+        if (!DevelopmentSafety.allowsStockMaintenance(this.context)) return false;
         if (sessionManager == null || !sessionManager.hasActiveSession()) {
             Log.d(TAG, "continueSessionAfterStepComplete: no active session — using legacy path");
             return false;
@@ -3018,6 +3039,7 @@ public class OtaHelper {
      * @return true if install command was sent successfully
      */
     public static boolean debugInstallMtkFirmware(Context context) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) return false;
         try {
             File firmwareFile = new File(OtaConstants.MTK_FIRMWARE_PATH);
 
@@ -3063,6 +3085,7 @@ public class OtaHelper {
      * @return true if install started successfully
      */
     public static boolean debugInstallBesFirmware(Context context) {
+        if (!DevelopmentSafety.allowsStockMaintenance(context)) return false;
         try {
             IBesOtaRegistry registry =
                     dagger.hilt.android.EntryPointAccessors.fromApplication(

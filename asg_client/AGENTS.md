@@ -88,7 +88,7 @@ Camera sources live in `com.mentra.asg_client.camera` subpackages (`lifecycle/`,
 
 ## Development on Mentra Live
 
-Mentra Live ships with `com.mentra.asg_client` as a **system app** signed with Mentra's release key. To run your own build, you must replace the factory app.
+Mentra Live ships with `com.mentra.asg_client` as a **system app** signed with Mentra's release key. Development builds use `com.mentra.asg_client.thirdparty` alongside it. Read [the development workflow](docs/development-on-stock-firmware.md) before switching a device. Preserve stock APKs/data and use the saved restoration state; firmware flashing is a separate task.
 
 ### Connecting via ADB
 
@@ -97,23 +97,23 @@ Connect your Mentra Live using the **Infinity Cable** (magnetic USB-C clip-on ca
 ### Installing Your Custom Build
 
 ```bash
-./scripts/dev-setup.sh
+./scripts/dev-setup.sh --serial YOUR_USB_SERIAL
 ```
 
 This script will:
-1. Build your debug APK
-2. Replace the factory app with your build
-3. Grant all required permissions
+1. Validate an already-built development APK and back up stock/recovery APKs and package states
+2. Temporarily disable stock ASG and recovery, install the fork, and grant development permissions
+3. Run a timed trial and restore stock automatically unless `--keep-running` is supplied
 
-**Warning:** After running this, you will not receive OTA updates from Mentra.
+While `--keep-running` leaves the fork active, stock OTA updates and recovery are paused. Restoring stock resumes their normal behavior.
 
-### Restoring Stock Firmware
+### Restoring the Stock App
 
 ```bash
-./scripts/restore-stock.sh
+./scripts/restore-stock.sh --serial YOUR_USB_SERIAL
 ```
 
-This removes your custom build and restores the factory app.
+This disables the fork, preserves its data, and restores saved stock ASG/recovery states without downloading updates or changing firmware.
 
 
 ## Project Structure

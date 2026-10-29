@@ -1,9 +1,11 @@
 package com.mentra.bluetoothsdk.sgcs
 
 import com.mentra.bluetoothsdk.BluetoothSdkDefaults
+import com.mentra.bluetoothsdk.BluetoothSdkException
 import com.mentra.bluetoothsdk.Bridge
 import com.mentra.bluetoothsdk.DeviceStore
 import com.mentra.bluetoothsdk.PhotoRequest
+import com.mentra.bluetoothsdk.SegmentedVideoOptions
 import com.mentra.bluetoothsdk.utils.ConnTypes
 
 /**
@@ -77,6 +79,23 @@ abstract class SGCManager {
     }
 
     abstract fun stopVideoRecording(requestId: String)
+
+    /** Opt-in segments must never silently degrade to an unbounded single-file recording. */
+    open fun startVideoRecording(
+        requestId: String,
+        save: Boolean,
+        sound: Boolean,
+        width: Int,
+        height: Int,
+        fps: Int,
+        maxRecordingTimeMinutes: Int,
+        segmented: SegmentedVideoOptions?,
+    ) {
+        if (segmented != null) {
+            throw BluetoothSdkException("unsupported_device", "Segmented video recording is not supported by this device.")
+        }
+        startVideoRecording(requestId, save, sound, width, height, fps, maxRecordingTimeMinutes)
+    }
 
     /**
      * Stop recording and upload the result to [webhookUrl] (multipart) using

@@ -141,7 +141,8 @@ public abstract class AsgServer extends NanoHTTPD {
      */
     @Override
     public Response serve(IHTTPSession session) {
-        recordHttpActivity();
+        boolean trackActivity = shouldTrackHttpActivity(session);
+        if (trackActivity) recordHttpActivity();
         String uri = session.getUri();
         Method method = session.getMethod();
         String clientIp = session.getRemoteIpAddress();
@@ -162,7 +163,7 @@ public abstract class AsgServer extends NanoHTTPD {
                 Response.Status.TOO_MANY_REQUESTS, 
                 "text/plain", 
                 "Rate limit exceeded. Please wait before making more requests."
-            ));
+            ), trackActivity);
         }
         
         // Record the request for rate limiting
@@ -181,20 +182,20 @@ public abstract class AsgServer extends NanoHTTPD {
         // Handle preflight OPTIONS requests
         if (method == Method.OPTIONS) {
             logger.debug(getTag(), "🔄 Handling CORS preflight request");
-            return trackResponse(newFixedLengthResponse(Response.Status.OK, "text/plain", ""));
+            return trackResponse(newFixedLengthResponse(Response.Status.OK, "text/plain", ""), trackActivity);
         }
 
         try {
             // Route requests using the abstract method
             logger.debug(getTag(), "🛣️ Routing request to appropriate handler...");
-            return trackResponse(handleRequest(session));
+            return trackResponse(handleRequest(session), trackActivity);
         } catch (Exception e) {
             logger.error(getTag(), "💥 Error handling request " + uri + ": " + e.getMessage(), e);
             return trackResponse(newFixedLengthResponse(
                 Response.Status.INTERNAL_ERROR, 
                 "text/plain", 
                 "Internal server error: " + e.getMessage()
-            ));
+            ), trackActivity);
         }
     }
 
@@ -205,8 +206,8 @@ public abstract class AsgServer extends NanoHTTPD {
         }
     }
 
-    private Response trackResponse(Response response) {
-        if (response == null || response.getData() == null || httpActivityListener == null) {
+    private Response trackResponse(Response response, boolean trackActivity) {
+        if (!trackActivity || response == null || response.getData() == null || httpActivityListener == null) {
             return response;
         }
         response.setData(new ActivityTrackingInputStream(response.getData()));
@@ -249,6 +250,11 @@ public abstract class AsgServer extends NanoHTTPD {
 
     /** Allow specialized local servers to exempt safe, high-volume transfer requests. */
     protected boolean shouldRateLimit(IHTTPSession session) {
+        return true;
+    }
+
+    /** Session lease traffic can hold a reservation separately from genuine transfer activity. */
+    protected boolean shouldTrackHttpActivity(IHTTPSession session) {
         return true;
     }
 

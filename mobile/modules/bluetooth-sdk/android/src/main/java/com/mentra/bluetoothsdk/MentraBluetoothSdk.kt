@@ -519,6 +519,53 @@ class MentraBluetoothSdk private constructor(
         DeviceStore.apply(ObservableStore.BLUETOOTH_CATEGORY, "loudness_gate_enabled", enabled)
     }
 
+    /**
+     * Seeds the photo-size readiness cache without sending BLE or confirming application.
+     * Call after SDK creation and before selecting/connecting a saved device. Persist the user's
+     * preference in the host app, and use [setButtonPhotoSize] to obtain a glasses acknowledgement.
+     */
+    fun cacheButtonPhotoSize(size: PhotoSize) = CaptureDefaultsCache.photoSize(size)
+
+    /** Sets the persistent hardware-button photo size without changing scan presets or cues. */
+    suspend fun setButtonPhotoSize(size: PhotoSize): SettingsAckEvent =
+        performSettingsCommand(
+            setting = "button_photo",
+            updateStore = { _ -> CaptureDefaultsCache.photoSize(size) },
+            send = { requestId -> deviceManager.sendButtonPhotoSettings(requestId, PhotoCaptureDefaults(size = size)) },
+        )
+
+    /**
+     * Seeds resolution, FPS, and duration for automatic reconnect replay without sending BLE.
+     * This is an in-memory cache only; it does not persist preferences or confirm glasses state.
+     * Hosts should call this before connecting and serialize later cache changes with their
+     * acknowledged settings requests, since those requests also update the cache after completion.
+     */
+    fun cacheVideoRecordingDefaults(defaults: VideoRecordingDefaults, maxRecordingTimeMinutes: Int) =
+        CaptureDefaultsCache.video(defaults, maxRecordingTimeMinutes)
+
+    /** Stage the complete profile before connecting. This does not grant permission to offload. */
+    fun cacheRecordingProfile(profile: UnifiedRecordingProfile) = CaptureDefaultsCache.recordingProfile(profile)
+
+    /** Atomically persist all recording defaults on compatible personal-fork glasses. */
+    suspend fun setRecordingProfile(profile: UnifiedRecordingProfile): SettingsAckEvent =
+        performSettingsCommand(
+            setting = "recording_profile",
+            updateStore = { ack ->
+                check(ack.setting == "recording_profile" && ack.values["status"] == "applied") {
+                    "Unexpected recording profile acknowledgement."
+                }
+                check(UnifiedRecordingProfile.fromMap(ack.values) == profile) { "Glasses did not confirm the complete recording profile." }
+                CaptureDefaultsCache.recordingProfile(profile)
+            },
+            send = { requestId -> deviceManager.sendRecordingProfile(requestId, profile) },
+        )
+
+    /** Query current/last recording; the listener receives its actual session ID, including button starts. */
+    fun requestVideoRecordingStatus(requestId: String? = null) {
+        requireGlassesConnected("get video recording status")
+        deviceManager.requestVideoRecordingStatus(requestId)
+    }
+
     @Deprecated(
         message =
             "Sticky action-button photo presets are deprecated. Prefer per-request " +
@@ -548,7 +595,7 @@ class MentraBluetoothSdk private constructor(
                     }
                 }
                 // Only update size if explicitly provided; omitted size = leave stored value unchanged
-                settings.size?.let { DeviceStore.set(ObservableStore.BLUETOOTH_CATEGORY, "button_photo_size", it.value) }
+                settings.size?.let { CaptureDefaultsCache.photoSize(it) }
                 settings.mfnr?.let { DeviceStore.set(ObservableStore.BLUETOOTH_CATEGORY, "button_photo_mfnr", it) }
                 settings.zsl?.let { DeviceStore.set(ObservableStore.BLUETOOTH_CATEGORY, "button_photo_zsl", it) }
                 settings.noiseReduction?.let {
@@ -582,17 +629,7 @@ class MentraBluetoothSdk private constructor(
     suspend fun setVideoRecordingDefaults(defaults: VideoRecordingDefaults): SettingsAckEvent =
         performSettingsCommand(
             setting = "button_video_recording",
-            updateStore = { _ ->
-                DeviceStore.set(
-                    ObservableStore.BLUETOOTH_CATEGORY,
-                    "button_video_settings",
-                    mapOf("width" to defaults.width, "height" to defaults.height, "fps" to defaults.fps),
-                )
-                // Keep legacy cache keys readable for older internal callers during migration.
-                DeviceStore.set(ObservableStore.BLUETOOTH_CATEGORY, "button_video_width", defaults.width)
-                DeviceStore.set(ObservableStore.BLUETOOTH_CATEGORY, "button_video_height", defaults.height)
-                DeviceStore.set(ObservableStore.BLUETOOTH_CATEGORY, "button_video_fps", defaults.fps)
-            },
+            updateStore = { _ -> CaptureDefaultsCache.videoDimensions(defaults) },
             send = { requestId ->
                 deviceManager.sendButtonVideoRecordingSettings(requestId, defaults.width, defaults.height, defaults.fps)
             },
@@ -601,9 +638,7 @@ class MentraBluetoothSdk private constructor(
     suspend fun setMaxVideoRecordingDuration(minutes: Int): SettingsAckEvent =
         performSettingsCommand(
             setting = "button_max_recording_time",
-            updateStore = { _ ->
-                DeviceStore.set(ObservableStore.BLUETOOTH_CATEGORY, "button_max_recording_time", minutes)
-            },
+            updateStore = { _ -> CaptureDefaultsCache.videoDuration(minutes) },
             send = { requestId -> deviceManager.sendButtonMaxRecordingTime(requestId, minutes) },
         )
 
@@ -833,7 +868,8 @@ class MentraBluetoothSdk private constructor(
         }
     }
 
-    suspend fun setHotspotState(enabled: Boolean): HotspotStatusEvent {
+    suspend fun setHotspotState(enabled: Boolean, syncToken: String? = null): HotspotStatusEvent {
+        require(syncToken == null || (enabled && syncToken.matches(Regex("[0-9a-f]{64}"))))
         val pending = PendingResponse<HotspotStatusEvent>("hotspot ${if (enabled) "enable" else "disable"} request")
         synchronized(oneShotLock) {
             if (pendingHotspotStatus != null) {
@@ -845,7 +881,7 @@ class MentraBluetoothSdk private constructor(
             pendingHotspotStatus = PendingHotspotStatusRequest(enabled, pending)
         }
         try {
-            deviceManager.setHotspotState(enabled)
+            deviceManager.setHotspotState(enabled, syncToken)
             return pending.await()
         } finally {
             synchronized(oneShotLock) {
@@ -1044,15 +1080,7 @@ class MentraBluetoothSdk private constructor(
             )
         }
         try {
-            deviceManager.startVideoRecording(
-                    request.requestId,
-                    request.save,
-                    request.sound,
-                    request.width,
-                    request.height,
-                    request.fps,
-                    request.maxRecordingTimeMinutes,
-            )
+            deviceManager.startVideoRecording(request)
             return pending.await()
         } finally {
             pendingVideoRecordingRequests.remove(request.requestId, pendingRequest)

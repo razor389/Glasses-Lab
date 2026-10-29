@@ -37,6 +37,12 @@ import com.mentra.bluetoothsdk.PhotoSize
 import com.mentra.bluetoothsdk.PhotoMode
 import com.mentra.bluetoothsdk.DeviceStore
 import com.mentra.bluetoothsdk.ObservableStore
+import com.mentra.bluetoothsdk.SegmentedVideoOptions
+import com.mentra.bluetoothsdk.CaptureDefaultsCache
+import com.mentra.bluetoothsdk.RecordingProfileCommand
+import com.mentra.bluetoothsdk.UnifiedRecordingProfile
+import com.mentra.bluetoothsdk.VideoRecordingCommand
+import com.mentra.bluetoothsdk.VideoRecordingRequest
 import com.mentra.bluetoothsdk.debug.BleTraceLogger
 import com.mentra.bluetoothsdk.utils.BlePhotoUploadService
 import com.mentra.bluetoothsdk.utils.ConnTypes
@@ -3637,6 +3643,13 @@ class MentraLive : SGCManager() {
                 // Send user settings to glasses
                 try {
                     sendUserSettings()
+                    // Same-link ASG restarts do not necessarily change the public ready Boolean.
+                    // This announces queued replay, not accepted settings; hosts can now request
+                    // fresh correlated acknowledgements for their durable capture defaults.
+                    Bridge.sendTypedMessage(
+                        "glasses_settings_replayed",
+                        glassesSessionId?.let { mapOf<String, Any>("sid" to it) } ?: emptyMap(),
+                    )
                 } catch (t: Throwable) {
                     Bridge.log("LIVE: ⚠️ glasses_ready: sendUserSettings threw: " + t)
                 }
@@ -5536,6 +5549,7 @@ class MentraLive : SGCManager() {
                 json.put("iso", iso)
             }
             PhotoRequest.appendScanFields(json, request)
+            PhotoRequest.appendQualityProfile(json, request)
 
             // Always generate BLE ID for potential fallback
             val bleImgId = "I" + String.format("%09d", System.currentTimeMillis() % 1000000000)
@@ -6449,7 +6463,8 @@ class MentraLive : SGCManager() {
             settings.put("fps", videoFps)
             json.put("params", settings)
             Bridge.log("LIVE: 📤 [SETTINGS_SYNC] BLE packet prepared: " + json.toString())
-            sendJson(json)
+            // Wake MTK for persistent settings, as photo size and duration updates do.
+            sendJson(json, true)
             Bridge.log("LIVE: ✅ [SETTINGS_SYNC] Video settings transmitted via BLE")
         } catch (e: JSONException) {
             Log.e(TAG, "❌ [SETTINGS_SYNC] Error sending button video recording settings", e)
@@ -8111,12 +8126,19 @@ class MentraLive : SGCManager() {
     }
 
     override fun sendHotspotState(enabled: Boolean) {
+        sendLabHotspotState(enabled, null)
+    }
+
+    /** A fork-only local media token is exchanged on the paired BLE control channel. */
+    fun sendLabHotspotState(enabled: Boolean, syncToken: String?) {
+        require(syncToken == null || (enabled && syncToken.matches(Regex("[0-9a-f]{64}"))))
         Bridge.log("LIVE: 🔥 Sending hotspot state to glasses - enabled: " + enabled)
         try {
             // Send hotspot state command to the ASG client
             val hotspotCommand = JSONObject()
             hotspotCommand.put("type", "set_hotspot_state")
             hotspotCommand.put("enabled", enabled)
+            if (syncToken != null) hotspotCommand.put("sync_token", syncToken)
             sendJson(hotspotCommand, true)
             Bridge.log("LIVE: 🔥 ✅ Hotspot state command sent successfully")
         } catch (e: JSONException) {
@@ -8980,11 +9002,13 @@ class MentraLive : SGCManager() {
     private fun sendUserSettings() {
         Bridge.log("LIVE: [VIDEO_SYNC] Sending user settings to glasses on connection")
 
-        // Send button video recording settings
-        sendButtonVideoRecordingSettings()
-
-        // Send button max recording time
-        sendButtonMaxRecordingTime()
+        // One atomic profile replaces the legacy pair; readiness grants are never cached/replayed.
+        val recordingProfile = CaptureDefaultsCache.recordingProfile()
+        if (recordingProfile != null) sendRecordingProfile(null, recordingProfile)
+        else {
+            sendButtonVideoRecordingSettings()
+            sendButtonMaxRecordingTime()
+        }
 
         // Send button photo settings
         sendButtonPhotoSettings()
@@ -9266,6 +9290,17 @@ class MentraLive : SGCManager() {
             height: Int,
             fps: Int,
             maxRecordingTimeMinutes: Int
+    ) = startVideoRecording(requestId, save, sound, width, height, fps, maxRecordingTimeMinutes, null)
+
+    override fun startVideoRecording(
+            requestId: String,
+            save: Boolean,
+            sound: Boolean,
+            width: Int,
+            height: Int,
+            fps: Int,
+            maxRecordingTimeMinutes: Int,
+            segmented: SegmentedVideoOptions?,
     ) {
         Bridge.log(
                 "LIVE: Starting video recording: requestId=" +
@@ -9291,33 +9326,30 @@ class MentraLive : SGCManager() {
         }
 
         try {
-            val json = JSONObject()
-            json.put("type", "start_video_recording")
-            json.put("requestId", requestId)
-            json.put("save", save)
-            json.put("sound", sound)
-
-            // Auto-stop timer; only sent when set (> 0). 0 = record until stopped.
-            if (maxRecordingTimeMinutes > 0) {
-                json.put("maxRecordingTimeMinutes", maxRecordingTimeMinutes)
-            }
-
-            // Add video settings when any field is overridden. Each field is sent
-            // only when > 0; the glasses merge the missing fields onto their saved
-            // button-video defaults, so a partial override (e.g. fps-only) still
-            // takes effect instead of being dropped here.
-            if (width > 0 || height > 0 || fps > 0) {
-                val settings = JSONObject()
-                if (width > 0) settings.put("width", width)
-                if (height > 0) settings.put("height", height)
-                if (fps > 0) settings.put("fps", fps)
-                json.put("settings", settings)
-            }
+            val json = JSONObject(VideoRecordingCommand.fields(VideoRecordingRequest(
+                requestId, save, sound, width, height, fps, maxRecordingTimeMinutes, segmented,
+            )))
 
             sendJson(json, true) // Wake up glasses for this command
         } catch (e: JSONException) {
             Log.e(TAG, "Failed to create start video recording command", e)
         }
+    }
+
+    fun sendRecordingProfile(requestId: String?, profile: UnifiedRecordingProfile) {
+        check(isConnected) { "Glasses are not connected." }
+        sendJson(JSONObject(RecordingProfileCommand.fields(requestId, profile)), true)
+    }
+
+    fun requestVideoRecordingStatus(requestId: String?) {
+        check(isConnected) { "Glasses are not connected." }
+        sendJson(JSONObject(RecordingProfileCommand.statusFields(requestId)), true)
+    }
+
+    fun startVideoRecordingFromProfile(request: VideoRecordingRequest) {
+        check(isConnected) { "Glasses are not connected." }
+        require(request.useRecordingProfile)
+        sendJson(JSONObject(VideoRecordingCommand.fields(request)), true)
     }
 
     override fun stopVideoRecording(requestId: String) {

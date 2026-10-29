@@ -1,7 +1,13 @@
 package com.mentra.asg_client.io.server.services;
 
+import com.mentra.asg_client.camera.lifecycle.VideoSegmentFiles;
+import com.mentra.asg_client.settings.RecordingProfile;
+
 import android.media.MediaMetadataRetriever;
 import android.os.Build;
+import com.mentra.asg_client.AsgConstants;
+import com.mentra.asg_client.camera.lifecycle.PhotoPersistenceRegistry;
+import com.mentra.asg_client.io.bluetooth.managers.mentralive.internal.LinkStateMachine;
 import com.mentra.asg_client.io.file.core.FileManager;
 import com.mentra.asg_client.io.file.core.FileManager.FileMetadata;
 import com.mentra.asg_client.io.server.core.AsgServer;
@@ -64,6 +70,16 @@ public class AsgCameraServer extends AsgServer {
     // File management system
     private final FileManager fileManager;
     private final GalleryTrashManager galleryTrashManager;
+    private final LabSyncSession labSyncSession = new LabSyncSession(android.os.SystemClock::elapsedRealtime);
+    private LinkStateMachine labPhonePresence;
+    private final LinkStateMachine.Listener labPhonePresenceListener = (state, caps, presence) -> {
+        // UART readiness/renegotiation is not a phone disconnect. Only a BES-reported absence is.
+        if (presence == LinkStateMachine.PhonePresence.ABSENT) labSyncSession.clear();
+    };
+    private VerifiedMediaReclaimer verifiedMediaReclaimer;
+    private java.util.function.Supplier<RecordingProfile> recordingProfileProvider = () -> null;
+    private java.util.function.Predicate<RecordingGrant> consumedRecordingGrantProvider = grant -> false;
+    private java.util.function.BooleanSupplier recordingBusyProvider = () -> false;
     private final Map<String, String> galleryHashCache =
             Collections.synchronizedMap(
                     new LinkedHashMap<String, String>() {
@@ -121,6 +137,11 @@ public class AsgCameraServer extends AsgServer {
         return TAG;
     }
 
+    @Override
+    protected boolean shouldTrackHttpActivity(IHTTPSession session) {
+        return !isPersonalFork() || !"/api/lab/v1/lease".equals(session.getUri());
+    }
+
     /** Gallery reads include one request per immutable segment and must not exhaust control limits. */
     @Override
     protected boolean shouldRateLimit(IHTTPSession session) {
@@ -136,6 +157,9 @@ public class AsgCameraServer extends AsgServer {
             case "/api/v3/capabilities":
             case "/api/v3/manifest":
             case "/api/v3/hash":
+            case "/api/lab/v1/manifest":
+            case "/api/lab/v1/hash":
+            case "/api/lab/v1/file":
                 return false;
             default:
                 return true;
@@ -152,6 +176,8 @@ public class AsgCameraServer extends AsgServer {
     @Override
     protected Response handleRequest(IHTTPSession session) {
         String uri = session.getUri();
+
+        if (uri.startsWith("/api/lab/v1/")) return serveLabSync(session);
 
         switch (uri) {
             case "/":
@@ -1297,7 +1323,289 @@ public class AsgCameraServer extends AsgServer {
         data.put("recommended_segment_bytes", 16 * 1024 * 1024);
         data.put("max_manifest_page_size", MAX_MANIFEST_PAGE_SIZE);
         data.put("server_time", System.currentTimeMillis());
+        if (isPersonalFork()) {
+            data.put("lab_sync_version", 1);
+            data.put("segmented_recording_version", 1);
+            data.put("recording_profile_version", 1);
+            data.put("lab_sync_idle_lease_max_seconds", AsgConstants.LAB_SYNC_IDLE_LEASE_MAX_SECONDS);
+        }
         return createSuccessResponse(data);
+    }
+
+    /** Establish local media authority only from a BLE hotspot command in the personal fork. */
+    public void configureLabSync(String token, java.util.function.BooleanSupplier hotspotEnabled,
+            java.util.function.Supplier<String> hotspotCredentials) {
+        if (!isPersonalFork()) return;
+        if (token == null) labSyncSession.clear();
+        else labSyncSession.configure(token, hotspotEnabled, hotspotCredentials);
+    }
+
+    /** The hotspot idle monitor reads this without renewing session authority or transfer activity. */
+    public boolean hasLabSyncIdleLease() {
+        return isPersonalFork() && labSyncSession.hasIdleLease();
+    }
+
+    /** Resolve the same immutable profile and busy state used by button/app recording starts. */
+    public void setRecordingProfileProvider(java.util.function.Supplier<RecordingProfile> profile,
+            java.util.function.BooleanSupplier busy) {
+        recordingProfileProvider = profile;
+        recordingBusyProvider = busy;
+    }
+
+    /** Durable consumed identity survives service/process restarts, unlike readiness authority. */
+    public void setConsumedRecordingGrantProvider(java.util.function.Predicate<RecordingGrant> consumed) {
+        consumedRecordingGrantProvider = consumed;
+    }
+
+    public RecordingGrant consumeRecordingGrant(String revision, String sessionId) {
+        if (!isPersonalFork()) throw new IllegalStateException("phone_not_ready");
+        return labSyncSession.consumeRecordingGrant(revision, sessionId);
+    }
+
+    public void revokeRecordingGrant() { labSyncSession.revokeRecordingGrant(); }
+
+    /** Observe actual BES-reported phone presence, preserving leases across transient UART states. */
+    public void observeLabPhonePresence(LinkStateMachine source) {
+        if (labPhonePresence != null) labPhonePresence.removeListener(labPhonePresenceListener);
+        labPhonePresence = isPersonalFork() ? source : null;
+        if (labPhonePresence != null) labPhonePresence.addListener(labPhonePresenceListener);
+    }
+
+    @Override
+    public void stopServer() {
+        observeLabPhonePresence(null);
+        labSyncSession.clear();
+        super.stopServer();
+    }
+
+    private boolean isPersonalFork() {
+        return config.getContext() != null
+                && AsgConstants.PERSONAL_ASG_PACKAGE.equals(config.getContext().getPackageName());
+    }
+
+    private synchronized VerifiedMediaReclaimer verifiedMedia() throws IOException {
+        if (verifiedMediaReclaimer == null) {
+            verifiedMediaReclaimer = new VerifiedMediaReclaimer(
+                    fileManager.getPackageDirectory(fileManager.getDefaultPackageName()),
+                    this::isLabCaptureBlocked,
+                    System::currentTimeMillis, AndroidDirectorySync::sync);
+        }
+        return verifiedMediaReclaimer;
+    }
+
+    private boolean isLabCaptureBlocked(String name) {
+        if (activeRecordingProvider == null || isActiveRecording(name)
+                || PhotoPersistenceRegistry.isCaptureActive(name)) return true;
+        File root = fileManager.getPackageDirectory(fileManager.getDefaultPackageName());
+        File live = new File(root, name);
+        File trashedCapture = new File(new File(root, FileManager.GALLERY_TRASH_DIR_NAME),
+                GallerySyncFilter.deriveCaptureId(name));
+        File trashed = new File(trashedCapture, new File(name).getName());
+        return PhotoPersistenceRegistry.hasPendingWrite(live)
+                || PhotoPersistenceRegistry.hasPendingWrite(trashed);
+    }
+
+    private Response serveLabSync(IHTTPSession session) {
+        if (!isPersonalFork()) return createErrorResponse(Response.Status.NOT_FOUND, "Not available");
+        if (!labSyncSession.authorize(session.getHeaders().get("authorization"))) {
+            return createErrorResponse(Response.Status.UNAUTHORIZED, "Authorize this hotspot session over BLE first");
+        }
+        String uri = session.getUri();
+        boolean receipt = "/api/lab/v1/receipt".equals(uri);
+        boolean lease = "/api/lab/v1/lease".equals(uri);
+        boolean recordingReady = "/api/lab/v1/recording-ready".equals(uri);
+        if (session.getMethod() != (receipt || lease || recordingReady ? Method.POST : Method.GET)) {
+            return createErrorResponse(Response.Status.METHOD_NOT_ALLOWED, "Method is not supported");
+        }
+        try {
+            if (recordingReady) {
+                JSONObject body = readJsonBody(session);
+                Object allowance = body.get("maxSessionBytes");
+                if (!(allowance instanceof Integer) && !(allowance instanceof Long)) throw new IllegalArgumentException("maxSessionBytes must be an integer");
+                RecordingGrant grant = new RecordingGrant(body.getString("profileRevision"),
+                        body.getString("grantId"), body.getString("sessionId"), body.getLong("maxSessionBytes"));
+                Object ttl = body.get("ttlSeconds");
+                if (!(ttl instanceof Integer) && !(ttl instanceof Long)) throw new IllegalArgumentException("ttlSeconds must be an integer");
+                long seconds = ((Number) ttl).longValue();
+                if (seconds < 0 || seconds > AsgConstants.RECORDING_READY_MAX_SECONDS) throw new IllegalArgumentException("Invalid readiness duration");
+                if (consumedRecordingGrantProvider.test(grant) || labSyncSession.isRecordingGrantConsumed(grant)) {
+                    return createErrorResponse(Response.Status.CONFLICT, "grant_consumed");
+                }
+                if (seconds > 0) {
+                    RecordingProfile profile = recordingProfileProvider.get();
+                    if (profile == null || !profile.offloadsToPhone() || !profile.revision.equals(grant.profileRevision)) {
+                        return createErrorResponse(Response.Status.CONFLICT, "profile_mismatch");
+                    }
+                    if (grant.maxSessionBytes < profile.segmentMaxBytes) throw new IllegalArgumentException("Insufficient recording allowance");
+                }
+                try {
+                    // Check the consumed tombstone first, including revocation races. An active
+                    // session must never look successfully revoked to the phone.
+                    synchronized (labSyncSession) {
+                        if (seconds > 0 && recordingBusyProvider.getAsBoolean() && !labSyncSession.isRecordingGrantConsumed(grant)) {
+                            throw new IllegalStateException("recording_busy");
+                        }
+                        labSyncSession.renewRecordingGrant(session.getHeaders().get("authorization"), grant, (int) seconds);
+                    }
+                } catch (IllegalStateException conflict) {
+                    return createErrorResponse(Response.Status.CONFLICT, conflict.getMessage());
+                }
+                Map<String, Object> data = new LinkedHashMap<>();
+                data.put("profileRevision", grant.profileRevision);
+                data.put("grantId", grant.grantId);
+                data.put("sessionId", grant.sessionId);
+                data.put("maxSessionBytes", grant.maxSessionBytes);
+                data.put("expires_in_seconds", seconds);
+                data.put("consumed", false);
+                return createSuccessResponse(data);
+            }
+            if (lease) {
+                Object duration = readJsonBody(session).get("ttl_seconds");
+                if (!(duration instanceof Integer) && !(duration instanceof Long)) {
+                    throw new IllegalArgumentException("Idle lease duration must be an integer");
+                }
+                long seconds = ((Number) duration).longValue();
+                if (seconds < 0 || seconds > AsgConstants.LAB_SYNC_IDLE_LEASE_MAX_SECONDS) {
+                    throw new IllegalArgumentException("Idle lease duration is out of range");
+                }
+                if (!labSyncSession.renewIdleLease(session.getHeaders().get("authorization"), (int) seconds)) {
+                    return createErrorResponse(Response.Status.UNAUTHORIZED, "Authorize this hotspot session over BLE first");
+                }
+                Map<String, Object> data = new LinkedHashMap<>();
+                data.put("api_version", 1);
+                data.put("expires_in_seconds", seconds);
+                return createSuccessResponse(data);
+            }
+            VerifiedMediaReclaimer media = verifiedMedia();
+            if (receipt) {
+                JSONObject request = readJsonBody(session);
+                VerifiedMediaReclaimer.Receipt value = new VerifiedMediaReclaimer.Receipt(
+                        request.getString("receipt_id"), request.getString("file"),
+                        request.getString("location"), request.getLong("size"),
+                        request.getString("generation"), request.getString("sha256"));
+                VerifiedMediaReclaimer.Result result;
+                synchronized (galleryTrashManager) {
+                    result = media.reclaim(value);
+                }
+                Map<String, Object> data = new LinkedHashMap<>();
+                data.put("receipt_id", value.id);
+                data.put("reclaimed_bytes", result.reclaimedBytes);
+                data.put("already_reclaimed", result.alreadyReclaimed);
+                return createSuccessResponse(data);
+            }
+            if ("/api/lab/v1/manifest".equals(uri)) {
+                int limit = Math.max(1, Math.min(AsgConstants.LAB_SYNC_MANIFEST_LIMIT,
+                        Integer.parseInt(session.getParms().getOrDefault("limit", "50"))));
+                String cursor = session.getParms().get("cursor");
+                List<VerifiedMediaReclaimer.Entry> entries;
+                int recoveryPending;
+                VerifiedMediaReclaimer.AuxiliaryStats retained;
+                synchronized (galleryTrashManager) {
+                    recoveryPending = media.recover();
+                    entries = media.list();
+                    retained = media.retainedAuxiliaries();
+                }
+                List<Map<String, Object>> files = new ArrayList<>();
+                String next = null;
+                boolean more = false;
+                for (VerifiedMediaReclaimer.Entry entry : entries) {
+                    if (cursor != null && entry.key().compareTo(cursor) <= 0) continue;
+                    if (files.size() == limit) { more = true; break; }
+                    Map<String, Object> item = labEntry(entry);
+                    String query = "?location=" + entry.location + "&file="
+                            + URLEncoder.encode(entry.name, StandardCharsets.UTF_8.name());
+                    item.put("download_url", "/api/lab/v1/file" + query);
+                    item.put("hash_url", "/api/lab/v1/hash" + query);
+                    files.add(item);
+                    next = entry.key();
+                }
+                Map<String, Object> data = new LinkedHashMap<>();
+                data.put("api_version", 1);
+                data.put("recovery_pending", recoveryPending);
+                data.put("segmented_recording_version", 1);
+                data.put("recording_profile_version", 1);
+                data.put("retained_auxiliary_files", retained.files);
+                data.put("retained_auxiliary_bytes", retained.bytes);
+                data.put("files", files);
+                data.put("has_more", more);
+                data.put("next_cursor", more ? next : JSONObject.NULL);
+                return createSuccessResponse(data);
+            }
+            if (!"/api/lab/v1/hash".equals(uri) && !"/api/lab/v1/file".equals(uri)) {
+                return createErrorResponse(Response.Status.NOT_FOUND, "Unknown local media endpoint");
+            }
+            VerifiedMediaReclaimer.Entry entry = media.inspect(
+                    session.getParms().get("file"), session.getParms().get("location"));
+            if ("/api/lab/v1/hash".equals(uri)) {
+                Map<String, Object> data = labEntry(entry);
+                data.put("file", entry.name);
+                data.put("sha256", media.hash(entry));
+                return createSuccessResponse(data);
+            }
+            String ifMatch = session.getHeaders().get("if-match");
+            if (ifMatch != null && !ifMatch.equals(entry.generation)) {
+                return createErrorResponse(Response.Status.PRECONDITION_FAILED, "File generation changed");
+            }
+            String rangeHeader = session.getHeaders().get("range");
+            String ifRange = session.getHeaders().get("if-range");
+            if (ifRange != null && !ifRange.equals(entry.generation)) rangeHeader = null;
+            GalleryTransferProtocol.ByteRange range;
+            try { range = GalleryTransferProtocol.parseRange(rangeHeader, entry.size); }
+            catch (IllegalArgumentException error) {
+                Response response = createErrorResponse(Response.Status.RANGE_NOT_SATISFIABLE, "Unsatisfiable byte range");
+                response.addHeader("Content-Range", "bytes */" + entry.size);
+                return response;
+            }
+            long start = range == null ? 0 : range.start;
+            long length = range == null ? entry.size : range.length();
+            Response response = newFixedLengthResponse(range == null ? Response.Status.OK : Response.Status.PARTIAL_CONTENT,
+                    labMimeType(entry.name), GalleryTransferProtocol.open(entry.file, start, length), length);
+            response.addHeader("ETag", entry.generation);
+            response.addHeader("Accept-Ranges", "bytes");
+            response.addHeader("Cache-Control", "no-store");
+            response.addHeader("X-Content-Type-Options", "nosniff");
+            if (range != null) response.addHeader("Content-Range", "bytes " + range.start + "-" + range.end + "/" + entry.size);
+            return response;
+        } catch (VerifiedMediaReclaimer.Conflict error) {
+            return createErrorResponse(Response.Status.CONFLICT, error.getMessage());
+        } catch (java.io.FileNotFoundException error) {
+            return createErrorResponse(Response.Status.NOT_FOUND, error.getMessage());
+        } catch (JSONException | IllegalArgumentException error) {
+            return createErrorResponse(Response.Status.BAD_REQUEST, "Invalid local media request");
+        } catch (IOException error) {
+            logger.error(TAG, "Verified local media operation failed; unverified originals retained", error);
+            return createErrorResponse(Response.Status.INTERNAL_ERROR, "Local media operation failed; retry safely");
+        }
+    }
+
+    private Map<String, Object> labEntry(VerifiedMediaReclaimer.Entry entry) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        String captureId = GallerySyncFilter.deriveCaptureId(entry.name);
+        item.put("capture_id", captureId);
+        item.put("name", entry.name);
+        item.put("location", entry.location);
+        item.put("size", entry.size);
+        item.put("modified", entry.modified);
+        item.put("generation", entry.generation);
+        item.put("mime_type", labMimeType(entry.name));
+        item.put("role", VerifiedMediaReclaimer.isThumbnail(entry.name) ? "thumbnail" : assignFileRole(entry.name));
+        String requestId = CaptureRequestId.extractFromCaptureId(captureId);
+        if (requestId != null) item.put("request_id", requestId);
+        VideoSegmentFiles.Identity segment = VideoSegmentFiles.identity(captureId);
+        if (segment != null) {
+            item.put("session_id", segment.sessionId);
+            item.put("segment_index", segment.index);
+            item.put("request_id", segment.sessionId);
+        }
+        return item;
+    }
+
+    private String labMimeType(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".mp4")) return "video/mp4";
+        if (lower.endsWith(".wav")) return "audio/wav";
+        if (lower.endsWith(".m4a")) return "audio/mp4";
+        return getMimeType(name);
     }
 
     /** Lightweight, newest-first manifest. Derived thumbnails and hashes stay lazy. */

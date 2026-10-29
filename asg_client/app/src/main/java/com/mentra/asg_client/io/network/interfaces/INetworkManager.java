@@ -125,6 +125,9 @@ public interface INetworkManager {
      * Update HTTP activity timestamp for hotspot auto-disconnect monitoring
      */
     void updateHttpActivity();
+
+    /** Supply a bounded, authenticated personal-fork lease independently of transfer activity. */
+    default void setLabSyncIdleLeaseProvider(java.util.function.BooleanSupplier provider) {}
     
     /**
      * Cleanup resources when the manager is no longer needed

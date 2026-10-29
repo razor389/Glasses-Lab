@@ -3,6 +3,8 @@ package com.mentra.asg_client.service.core.handlers;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import com.mentra.asg_client.BuildConfig;
+import com.mentra.asg_client.DevelopmentSafety;
 import com.mentra.asg_client.io.ota.helpers.OtaHelper;
 import com.mentra.asg_client.service.communication.interfaces.ICommunicationManager;
 import com.mentra.asg_client.service.legacy.interfaces.ICommandHandler;
@@ -31,10 +33,18 @@ public class OtaCommandHandler implements ICommandHandler {
 
     private final OtaHelper otaHelper;
     private final ICommunicationManager communicationManager;
+    private final boolean stockMaintenanceAllowed;
 
     public OtaCommandHandler(OtaHelper otaHelper, ICommunicationManager communicationManager) {
+        this(otaHelper, communicationManager,
+                DevelopmentSafety.allowsStockMaintenance(BuildConfig.APPLICATION_ID));
+    }
+
+    OtaCommandHandler(OtaHelper otaHelper, ICommunicationManager communicationManager,
+            boolean stockMaintenanceAllowed) {
         this.otaHelper = otaHelper;
         this.communicationManager = communicationManager;
+        this.stockMaintenanceAllowed = stockMaintenanceAllowed;
         Log.i(TAG, "OtaCommandHandler constructed with injected dependencies");
     }
 
@@ -71,6 +81,10 @@ public class OtaCommandHandler implements ICommandHandler {
      * delay until OtaHelper is ready.
      */
     private boolean handleOtaStart(JSONObject data) {
+        if (!stockMaintenanceAllowed) {
+            sendOtaError("Updates are disabled in this development build. Install builds over USB.");
+            return false;
+        }
         Log.i(TAG, "📱 Received ota_start command from phone");
 
         if (otaHelper == null) {

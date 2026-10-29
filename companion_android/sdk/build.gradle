@@ -1,0 +1,96 @@
+import java.security.MessageDigest
+
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
+
+// Compile the checked-out native SDK, excluding only Expo adapters and its LAN
+// photo server. The companion uses a receiver bound to loopback for BLE photos.
+def sdkSource = rootProject.file('../mobile/modules/bluetooth-sdk/android')
+def sherpaVersion = '1.13.2'
+def sherpaHash = 'aa5505c0ec4f8bdaee5f214a64ba3012be64f2aecc022e82a64f33392b8dd245'
+def sherpaDir = rootProject.file("../local/asg-dev/phone-maven/com/k2fsa/sherpa/onnx/sherpa-onnx/${sherpaVersion}")
+def sherpaAar = new File(sherpaDir, "sherpa-onnx-${sherpaVersion}.aar")
+def sha256 = { File artifact ->
+    def md = MessageDigest.getInstance('SHA-256')
+    artifact.withInputStream { input ->
+        def buffer = new byte[65536]
+        int count
+        while ((count = input.read(buffer)) > 0) md.update(buffer, 0, count)
+    }
+    md.digest().encodeHex().toString()
+}
+if (!sherpaAar.exists()) {
+    sherpaDir.mkdirs()
+    def partial = new File(sherpaDir, 'download.part')
+    def connection = new URL("https://github.com/k2-fsa/sherpa-onnx/releases/download/v${sherpaVersion}/sherpa-onnx-${sherpaVersion}.aar").openConnection()
+    connection.setRequestProperty('User-Agent', 'Mozilla/5.0 GlassesLabBuild')
+    connection.connectTimeout = 30000
+    connection.readTimeout = 30000
+    connection.inputStream.withCloseable { input ->
+        partial.withOutputStream { output -> output << input }
+    }
+    if (sha256(partial) != sherpaHash) throw new GradleException('Sherpa-ONNX checksum mismatch')
+    java.nio.file.Files.move(partial.toPath(), sherpaAar.toPath())
+}
+if (sha256(sherpaAar) != sherpaHash) throw new GradleException('Cached Sherpa-ONNX checksum mismatch')
+new File(sherpaDir, "sherpa-onnx-${sherpaVersion}.pom").text = """<project><modelVersion>4.0.0</modelVersion><groupId>com.k2fsa.sherpa.onnx</groupId><artifactId>sherpa-onnx</artifactId><version>${sherpaVersion}</version><packaging>aar</packaging></project>"""
+
+android {
+    namespace 'com.mentra.bluetoothsdk'
+    compileSdk 36
+    defaultConfig {
+        minSdk 28
+        buildConfigField 'String', 'SDK_VERSION', '"source-checkout"'
+    }
+    buildFeatures { buildConfig true }
+    sourceSets.main {
+        manifest.srcFile new File(sdkSource, 'src/main/AndroidManifest.xml')
+        java.srcDirs = [new File(sdkSource, 'src/main/java')]
+        java.exclude '**/BluetoothSdkModule.kt', '**/MentraLocalNetworkModule.kt',
+                '**/MentraPhotoReceiverModule.kt', '**/LocalPhotoUploadServer.kt'
+        res.srcDirs = [new File(sdkSource, 'src/main/res')]
+        assets.srcDirs = [new File(sdkSource, 'src/main/assets')]
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = '17' }
+    packagingOptions { jniLibs.pickFirsts += ['**/libc++_shared.so', '**/libonnxruntime.so', '**/libonnxruntime4j_jni.so'] }
+}
+
+// Keep versions aligned with mobile/modules/bluetooth-sdk/android/build.gradle.
+dependencies {
+    // Align the pre-multiplatform annotation jar with AVIF's annotation-jvm dependency.
+    implementation 'androidx.annotation:annotation:1.7.1'
+    implementation 'androidx.lifecycle:lifecycle-service:2.6.1'
+    implementation 'org.greenrobot:eventbus:3.3.1'
+    implementation 'com.google.code.gson:gson:2.10.1'
+    implementation 'com.google.android.gms:play-services-location:21.0.1'
+    implementation 'com.google.android.gms:play-services-base:18.2.0'
+    implementation 'org.apache.commons:commons-compress:1.24.0'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'androidx.exifinterface:exifinterface:1.3.7'
+    implementation 'com.github.awxkee:avif-coder:1.7.3'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+    implementation 'io.github.jaredmdobson:concentus:1.0.1'
+    implementation project(':lc3')
+    implementation project(':silero')
+    implementation "com.k2fsa.sherpa.onnx:sherpa-onnx:${sherpaVersion}@aar"
+    implementation 'com.vuzix:ultralite-sdk-android:1.8'
+    implementation 'com.squareup.picasso:picasso:2.8'
+    implementation 'com.google.protobuf:protobuf-java:4.32.0'
+    implementation 'com.google.protobuf:protobuf-java-util:4.32.0'
+}
+configurations.configureEach {
+    resolutionStrategy.force 'com.microsoft.onnxruntime:onnxruntime-android:1.24.3'
+}
+
+// Kotlin also consumes Android's Java source directories, but does not inherit
+// their exclude patterns. Apply the adapter exclusions to its compiler task too.
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    exclude '**/BluetoothSdkModule.kt', '**/MentraLocalNetworkModule.kt',
+            '**/MentraPhotoReceiverModule.kt', '**/LocalPhotoUploadServer.kt'
+}

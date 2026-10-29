@@ -1,6 +1,54 @@
 package com.mentra.asg_client;
 
 public class AsgConstants {
+    /** Personal-fork recording rotates complete MP4 files while retaining one encoder session. */
+    public static final long VIDEO_SEGMENT_DEFAULT_BYTES = 64L * 1024 * 1024;
+    public static final long VIDEO_SEGMENT_MIN_BYTES = 8L * 1024 * 1024;
+    public static final long VIDEO_SEGMENT_MAX_BYTES = 256L * 1024 * 1024;
+    public static final long VIDEO_SEGMENT_DEFAULT_BACKLOG_BYTES = 256L * 1024 * 1024;
+    public static final long VIDEO_SEGMENT_MAX_BACKLOG_BYTES = 4L * 1024 * 1024 * 1024;
+    /** Headroom for buffered encoder output when enforcing byte limits. */
+    public static final long VIDEO_SEGMENT_STOP_HEADROOM_BYTES = 4L * 1024 * 1024;
+    public static final int VIDEO_SEGMENT_REQUEST_ID_MAX_BYTES = 128;
+    /** Renew the inward RGB status lease before its 30-minute firmware duration expires. */
+    public static final long VIDEO_SEGMENT_LED_RENEWAL_MS = 10L * 60 * 1000;
+    /** Canonical recording profile is one atomically persisted JSON value. */
+    public static final String RECORDING_PROFILE_KEY = "recording_profile_v1";
+    public static final String RECORDING_CONSUMED_GRANT_KEY = "last_recording_grant_v1";
+    public static final int RECORDING_READY_MAX_SECONDS = 180;
+    /** One bounded completion record makes terminal status replay safe after a BLE disconnect. */
+    public static final String VIDEO_SEGMENT_STATUS_PREFS = "segmented_recording_status";
+    public static final String VIDEO_SEGMENT_STATUS_KEY = "last_terminal";
+    /** Only the stock app owns firmware updates, recovery, and the stock APK backup. */
+    public static final String STOCK_ASG_PACKAGE = "com.mentra.asg_client";
+
+    /** Personal companion protocol is available only to the separately installed fork. */
+    public static final String PERSONAL_ASG_PACKAGE = "com.mentra.asg_client.thirdparty";
+    /** Reauthorize local media reclamation over BLE after thirty minutes without API activity. */
+    public static final long LAB_SYNC_TOKEN_IDLE_MS = 30L * 60 * 1000;
+    /** A companion must renew its fork-only hotspot idle lease before this bounded deadline. */
+    public static final int LAB_SYNC_IDLE_LEASE_MAX_SECONDS = 180;
+    /** Avoid exposing camera output before finalization has settled. Active captures are also blocked. */
+    public static final long LAB_SYNC_SETTLE_MS = 3000;
+    /** Hidden receipt journals and quarantined payloads stay within gallery metadata. */
+    public static final String LAB_SYNC_RECEIPT_DIRECTORY = "verified_receipts";
+    /** Bound each local sync manifest page without limiting transferable media size. */
+    public static final int LAB_SYNC_MANIFEST_LIMIT = 100;
+    /** Capture writer marker retained if JPEG persistence or EXIF finalization is interrupted. */
+    public static final String PHOTO_PERSISTENCE_PENDING_SUFFIX = ".photo-persistence.pending";
+
+    /** Version of the opt-in local photo size/JPEG quality contract acknowledged to phones. */
+    public static final int LOCAL_PHOTO_QUALITY_VERSION = 1;
+    /** Omitted/default requests retain the historical quality policy for their origin. */
+    public static final String PHOTO_QUALITY_PROFILE_DEFAULT = "default";
+    /** Local archival photos use the same size targets and JPEG quality as button photos. */
+    public static final String PHOTO_QUALITY_PROFILE_LOCAL = "local";
+    /** Resolved legacy SDK quality name used in capture diagnostics. */
+    public static final String PHOTO_QUALITY_PROFILE_SDK = "sdk";
+
+    /** Keep experiments and gallery deletion requests away from the stock photo/video library. */
+    public static final String DEVELOPMENT_MEDIA_ROOT_PATH = "/storage/emulated/0/asg_media.thirdparty";
+
     /** Mentra Live hotspot idle timeout after the last local HTTP activity. */
     public static final long HOTSPOT_INACTIVITY_TIMEOUT_MS = 120_000L;
 

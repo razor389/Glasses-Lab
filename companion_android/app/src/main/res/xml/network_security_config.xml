@@ -1,0 +1,9 @@
+<network-security-config>
+    <!-- The glasses' media server uses HTTP at a runtime-selected private IP.
+         VideoDownloader validates that address and binds requests to the approved Wi-Fi network. -->
+    <base-config cleartextTrafficPermitted="true" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain>127.0.0.1</domain>
+        <domain>localhost</domain>
+    </domain-config>
+</network-security-config>

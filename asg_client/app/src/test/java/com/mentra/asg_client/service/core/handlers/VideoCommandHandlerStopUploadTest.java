@@ -136,6 +136,30 @@ public class VideoCommandHandlerStopUploadTest {
     }
 
     @Test
+    public void stop_idleCompletedSession_replaysDurableTerminalWithoutStoppingAgain() throws Exception {
+        when(captureService.isRecordingVideo()).thenReturn(false);
+        JSONObject terminal = new JSONObject().put("status", "recording_stopped")
+                .put("sessionId", "req-123").put("segmentCount", 3)
+                .put("stopReason", "session_byte_limit").put("success", true);
+        when(captureService.getSegmentedTerminalStatus("req-123")).thenReturn(terminal);
+        assertThat(handler.handleStopCommand(new JSONObject().put("requestId", "req-123"))).isTrue();
+        verify(streamingManager).sendVideoRecordingStatusResponse("req-123", true, terminal);
+        verify(captureService, never()).handleStopVideoCommand(
+                ArgumentMatchers.anyString(), ArgumentMatchers.anyString(), ArgumentMatchers.anyString());
+    }
+
+    @Test
+    public void status_idleFailedSession_replaysFailureAndFinalizedCount() throws Exception {
+        when(captureService.isRecordingVideo()).thenReturn(false);
+        JSONObject terminal = new JSONObject().put("status", "error")
+                .put("sessionId", "req-123").put("segmentCount", 2)
+                .put("stopReason", "finalization_error").put("success", false);
+        when(captureService.getSegmentedTerminalStatus("req-123")).thenReturn(terminal);
+        assertThat(handler.handleStatusCommand(new JSONObject().put("requestId", "req-123"))).isTrue();
+        verify(streamingManager).sendVideoRecordingStatusResponse("req-123", false, terminal);
+    }
+
+    @Test
     public void stop_serviceUnavailable_returnsFalse() throws Exception {
         when(serviceManager.getMediaCaptureService()).thenReturn(null);
 

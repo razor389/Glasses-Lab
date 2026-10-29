@@ -31,8 +31,6 @@ public class StorageManager {
     // Maximum file size (4GB - 1 byte for FAT32 compatibility)
     private static final long MAX_FILE_SIZE = (4L * 1024 * 1024 * 1024) - 1;
 
-    // Maximum video duration (30 minutes)
-    private static final long MAX_VIDEO_DURATION_MS = 30 * 60 * 1000;
 
     private final Context context;
 
@@ -122,8 +120,9 @@ public class StorageManager {
         // Calculate duration: fileSize(bytes) * 8(bits/byte) * 1000(ms/s) / bitrate(bits/s)
         long maxDurationMs = (maxFileSize * 8 * 1000) / bitrate;
         
-        // Cap at 30 minutes
-        int duration = (int) Math.min(maxDurationMs, MAX_VIDEO_DURATION_MS);
+        // User duration is enforced by the recording session. This estimate protects only the
+        // actual single-file/free-space limit, without an unrelated 30-minute ceiling.
+        int duration = (int) Math.min(maxDurationMs, Integer.MAX_VALUE);
         
         Log.d(TAG, "Max video duration: " + (duration / 1000) + " seconds at bitrate " + bitrate);
         

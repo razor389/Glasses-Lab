@@ -90,6 +90,30 @@ public class PhotoCommandHandlerTransferMethodTest {
     }
 
     @Test
+    public void localQualityIsCarriedIntoArchivalCapture() throws Exception {
+        JSONObject data = takePhotoData().put("save", true).put("qualityProfile", "local");
+        data.remove("webhookUrl");
+        handler.handleCommand("take_photo", data);
+        org.mockito.ArgumentCaptor<PhotoCaptureSettings> settings =
+                org.mockito.ArgumentCaptor.forClass(PhotoCaptureSettings.class);
+        verify(captureService).takePhotoForLocalSave(
+                anyString(), eq("req-1"), eq("medium"), eq("photo"), anyBoolean(), anyBoolean(),
+                nullable(Long.class), nullable(Integer.class), settings.capture());
+        assertThat(settings.getValue().qualityProfile)
+                .isEqualTo(com.mentra.asg_client.camera.policy.PhotoQualityProfile.LOCAL);
+    }
+
+    @Test
+    public void localQualityWithUploadFailsBeforeCapture() throws Exception {
+        JSONObject data = takePhotoData().put("save", true).put("qualityProfile", "local");
+        assertThat(handler.handleCommand("take_photo", data)).isFalse();
+        verify(captureService).sendPhotoErrorResponse(eq("req-1"), eq("INVALID_QUALITY_PROFILE"), anyString());
+        verify(captureService, org.mockito.Mockito.never()).takePhotoForLocalSave(
+                anyString(), anyString(), anyString(), anyString(), anyBoolean(), anyBoolean(),
+                nullable(Long.class), nullable(Integer.class), any(PhotoCaptureSettings.class));
+    }
+
+    @Test
     public void takePhoto_omittedTransferMethod_defaultsToAuto() throws Exception {
         assertThat(handler.handleCommand("take_photo", takePhotoData())).isTrue();
 

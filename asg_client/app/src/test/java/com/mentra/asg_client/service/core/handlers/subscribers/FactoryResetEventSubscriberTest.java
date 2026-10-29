@@ -13,6 +13,7 @@ import static org.robolectric.Shadows.shadowOf;
 
 import android.app.Application;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.os.Looper;
 import androidx.test.core.app.ApplicationProvider;
 import com.mentra.asg_client.io.media.core.MediaCaptureService;
@@ -48,13 +49,19 @@ import org.robolectric.annotation.Config;
 @Config(application = Application.class, sdk = 33)
 public class FactoryResetEventSubscriberTest {
 
-    private Application app;
+    private Context app;
     private AsgClientServiceManager serviceManager;
     private OtaHelper otaHelper;
 
     @Before
     public void setUp() {
-        app = ApplicationProvider.getApplicationContext();
+        // This suite verifies stock reset behavior even when Gradle builds the third-party variant.
+        app = new ContextWrapper(ApplicationProvider.getApplicationContext()) {
+            @Override
+            public String getPackageName() {
+                return "com.mentra.asg_client";
+            }
+        };
         serviceManager = mock(AsgClientServiceManager.class);
         otaHelper = mock(OtaHelper.class);
         when(serviceManager.getContext()).thenReturn(app);

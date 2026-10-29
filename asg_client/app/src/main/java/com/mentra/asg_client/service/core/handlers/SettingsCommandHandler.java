@@ -15,6 +15,7 @@ import com.mentra.asg_client.service.legacy.managers.AsgClientServiceManager;
 import com.mentra.asg_client.service.system.core.SystemControllerFactory;
 import com.mentra.asg_client.settings.AsgSettings;
 import com.mentra.asg_client.settings.VideoSettings;
+import com.mentra.asg_client.settings.RecordingProfile;
 import java.util.Set;
 import org.json.JSONObject;
 
@@ -52,6 +53,7 @@ public class SettingsCommandHandler implements ICommandHandler {
     public Set<String> getSupportedCommandTypes() {
         return Set.of(
                 "set_photo_mode",
+                "set_recording_profile",
                 "button_video_recording_setting",
                 "button_max_recording_time",
                 "button_photo_setting",
@@ -66,6 +68,8 @@ public class SettingsCommandHandler implements ICommandHandler {
     public boolean handleCommand(String commandType, JSONObject data) {
         try {
             switch (commandType) {
+                case "set_recording_profile":
+                    return handleRecordingProfile(data);
                 case "set_photo_mode":
                     return handleSetPhotoMode(data);
                 case "button_video_recording_setting":
@@ -90,6 +94,32 @@ public class SettingsCommandHandler implements ICommandHandler {
             }
         } catch (Exception e) {
             Log.e(TAG, "Error handling settings command: " + commandType, e);
+            return false;
+        }
+    }
+
+    /** Atomically persist the canonical app/button recording profile before acknowledging it. */
+    private boolean handleRecordingProfile(JSONObject data) {
+        String requestId = getRequestId(data);
+        try {
+            Context context = serviceManager.getContext();
+            if (context == null || !AsgConstants.PERSONAL_ASG_PACKAGE.equals(context.getPackageName())) {
+                sendSettingsError(requestId, "recording_profile", "unsupported", "Unified recording is available in the personal fork.");
+                return false;
+            }
+            AsgSettings settings = serviceManager.getAsgSettings();
+            if (settings == null) throw new IllegalStateException("settings_unavailable");
+            RecordingProfile profile = RecordingProfile.fromJson(data);
+            RecordingProfile previous = null;
+            try { previous = settings.getRecordingProfile(); } catch (IllegalStateException corrupt) { /* Allow explicit repair. */ }
+            if (!settings.setRecordingProfile(profile)) throw new IllegalStateException("persistence_failed");
+            if ((previous == null || !previous.revision.equals(profile.revision)) && serviceManager.getCameraServer() != null) {
+                serviceManager.getCameraServer().revokeRecordingGrant();
+            }
+            sendSettingsAck(requestId, "recording_profile", STATUS_APPLIED, settings.getRecordingProfile().toJson());
+            return true;
+        } catch (Exception error) {
+            sendSettingsError(requestId, "recording_profile", "invalid_profile", error.getMessage());
             return false;
         }
     }
@@ -355,6 +385,7 @@ public class SettingsCommandHandler implements ICommandHandler {
                 Log.d(TAG, "✅ Button photo settings saved: size=" + ackedSize);
                 JSONObject values = new JSONObject();
                 values.put("size", ackedSize);
+                values.put("localPhotoQualityVersion", AsgConstants.LOCAL_PHOTO_QUALITY_VERSION);
                 if (mfnr != null) {
                     values.put("mfnr", mfnr);
                 }

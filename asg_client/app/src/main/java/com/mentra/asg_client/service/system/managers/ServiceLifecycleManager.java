@@ -7,6 +7,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import com.mentra.asg_client.DevelopmentSafety;
 import com.mentra.asg_client.RecoveryWorkerManager;
 import com.mentra.asg_client.io.ota.helpers.OtaHelper;
 import com.mentra.asg_client.io.ota.services.OtaService;
@@ -56,9 +57,13 @@ public class ServiceLifecycleManager implements IServiceLifecycle {
         serviceManager.initialize();
 
         // Recovery sidecar is the crash watchdog — start before other delayed init work.
-        recoveryWorkerManager.initialize();
-        scheduleOtaServiceStart();
-        scheduleRecoveryBackupRefresh();
+        if (DevelopmentSafety.allowsStockMaintenance(context)) {
+            recoveryWorkerManager.initialize();
+            scheduleOtaServiceStart();
+            scheduleRecoveryBackupRefresh();
+        } else {
+            Log.i(TAG, "Development build: stock recovery, OTA, and backup maintenance disabled");
+        }
 
         // Clean up system packages
         // cleanupSystemPackages(); Not needed anymore

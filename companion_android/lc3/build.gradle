@@ -1,0 +1,20 @@
+plugins { id 'com.android.library' }
+def lc3Source = rootProject.file('../mobile/modules/bluetooth-sdk/android/lc3Lib')
+android {
+    namespace 'com.mentra.lc3Lib'
+    compileSdk 36
+    ndkVersion '27.0.12077973'
+    defaultConfig {
+        minSdk 28
+        ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
+        externalNativeBuild.cmake.arguments '-DANDROID_STL=c++_static', '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'
+    }
+    sourceSets.main {
+        manifest.srcFile new File(lc3Source, 'src/main/AndroidManifest.xml')
+        java.srcDirs = [new File(lc3Source, 'src/main/java')]
+    }
+    externalNativeBuild.cmake {
+        path new File(lc3Source, 'src/main/cpp/liblc3/CMakeLists.txt')
+        version '3.22.1'
+    }
+}

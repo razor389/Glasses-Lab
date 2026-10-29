@@ -107,12 +107,61 @@ public class FileManagerCleanupTest {
             assertTrue(capture.mkdirs());
             write(new File(capture, AsgConstants.VIDEO_THUMBNAIL_SIDECAR_NAME));
 
-            new FileManagerImpl(orphanBase, mock(Logger.class));
+            new FileManagerImpl(orphanBase, mock(Logger.class), false);
 
             assertFalse(capture.exists());
         } finally {
             deleteRecursively(orphanBase);
         }
+    }
+
+    @Test
+    public void personalStartupPreservesEveryNonemptyCaptureWithoutAPrimary() throws Exception {
+        File[] retained = {
+            write("IMG_imu_only/imu.json"),
+            write("IMG_raw_only/base.dng"),
+            write("IMG_other_raw/base.raw"),
+            write("IMG_bracket_only/ev-2.jpg"),
+            write("VID_partial_only/base.mp4.partial"),
+            write("VID_corrupt_only/base.mp4"),
+            write("VID_thumbnail_only/" + AsgConstants.VIDEO_THUMBNAIL_SIDECAR_NAME),
+            write("IMG_marker_only/" + AsgConstants.PHOTO_PERSISTENCE_PENDING_SUFFIX),
+            write("BUFFER_partial_only/unfinished.part")
+        };
+        age(retained);
+
+        new FileManagerImpl(baseDirectory, mock(Logger.class), true);
+        new FileManagerImpl(baseDirectory, mock(Logger.class), true);
+
+        for (File file : retained) {
+            assertTrue("Startup must preserve " + file, file.isFile());
+            assertEquals("data", new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    public void personalStartupRemovesOnlyEmptyCaptureDirectories() throws Exception {
+        File empty = new File(packageDirectory, "IMG_empty");
+        File emptyBuffer = new File(packageDirectory, "BUFFER_empty");
+        File retained = write("VID_nonempty/imu.json");
+        assertTrue(empty.mkdirs());
+        assertTrue(emptyBuffer.mkdirs());
+
+        new FileManagerImpl(baseDirectory, mock(Logger.class), true);
+
+        assertFalse(empty.exists());
+        assertFalse(emptyBuffer.exists());
+        assertTrue(retained.isFile());
+    }
+
+    @Test
+    public void defaultStartupPolicyMatchesApplicationPackage() throws Exception {
+        File retained = write("IMG_default_policy/imu.json");
+
+        new FileManagerImpl(baseDirectory, mock(Logger.class));
+
+        assertEquals(AsgConstants.PERSONAL_ASG_PACKAGE.equals(com.mentra.asg_client.BuildConfig.APPLICATION_ID),
+                retained.isFile());
     }
 
     private File write(String relativePath) throws Exception {

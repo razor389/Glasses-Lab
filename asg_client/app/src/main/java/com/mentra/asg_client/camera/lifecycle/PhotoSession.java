@@ -84,6 +84,7 @@ public final class PhotoSession {
      * after each shot; see {@link #activateQueuedRequest} and {@link #clearActiveCapture}.
      */
     private volatile ActivePhotoCapture activeCapture;
+    @Nullable private PhotoPersistenceRegistry.Lease capturePersistenceLease;
 
     /**
      * Last camera pipeline config (size / SDK / exposure) applied to the open session. Survives
@@ -411,7 +412,13 @@ public final class PhotoSession {
         // a stale exposure/ISO to this request. The AE callback re-populates these after metering.
         mLastMeteredExposureNs = null;
         mLastMeteredIso = null;
+        releaseCapturePersistence(false);
         activeCapture = ActivePhotoCapture.fromQueued(queued);
+        if (warmUpRequest == null && activeCapture.persistToDisk) {
+            synchronized (this) {
+                capturePersistenceLease = PhotoPersistenceRegistry.beginCaptureForBuild(activeCapture.filePath);
+            }
+        }
         rememberConfiguredCamera(queued);
     }
 
@@ -421,6 +428,16 @@ public final class PhotoSession {
      */
     private void clearActiveCapture() {
         activeCapture = null;
+        releaseCapturePersistence(false);
+    }
+
+    private synchronized void releaseCapturePersistence(boolean completed) {
+        PhotoPersistenceRegistry.Lease lease = capturePersistenceLease;
+        capturePersistenceLease = null;
+        if (lease != null) {
+            if (completed) lease.complete();
+            lease.close();
+        }
     }
 
     private void rememberConfiguredCamera(QueuedPhotoRequest pr) {
@@ -433,6 +450,7 @@ public final class PhotoSession {
         return new ConfiguredCameraConfig(
                 request.size,
                 request.isFromSdk,
+                request.captureSettings.qualityProfile.usesSdkQuality(request.isFromSdk),
                 request.exposureTimeNs,
                 resolveZslForRequest(request.captureSettings),
                 resolveMfnrForRequest(request.captureSettings));
@@ -442,6 +460,7 @@ public final class PhotoSession {
         return new ConfiguredCameraConfig(
                 request.size,
                 request.isFromSdk,
+                request.captureSettings.qualityProfile.usesSdkQuality(request.isFromSdk),
                 request.exposureTimeNs,
                 resolveZslForRequest(request.captureSettings),
                 resolveMfnrForRequest(request.captureSettings));
@@ -487,7 +506,7 @@ public final class PhotoSession {
     }
 
     private int getJpegQualityForSize() {
-        if (currentIsFromSdk()) {
+        if (photoRequestUsesSdkQuality()) {
             // Normalize so legacy tiers (small→low, large→high, full→max) map correctly.
             String size = PhotoSizeTier.normalizeCaptureSize(currentSize());
             if (size == null) {
@@ -539,7 +558,9 @@ public final class PhotoSession {
         boolean reqZsl = resolveZslForRequest(request.captureSettings);
         boolean reqMfnr = resolveMfnrForRequest(request.captureSettings);
         return baseline.differsFrom(
-                request.size, request.isFromSdk, request.exposureTimeNs, reqZsl, reqMfnr);
+                request.size, request.isFromSdk,
+                request.captureSettings.qualityProfile.usesSdkQuality(request.isFromSdk),
+                request.exposureTimeNs, reqZsl, reqMfnr);
     }
 
     /**
@@ -578,6 +599,8 @@ public final class PhotoSession {
         return !baseline.differsFrom(
                 size,
                 isFromSdk,
+                (captureSettings != null ? captureSettings : PhotoCaptureSettings.EMPTY)
+                        .qualityProfile.usesSdkQuality(isFromSdk),
                 exposureTimeNs,
                 resolveZslForRequest(captureSettings),
                 resolveMfnrForRequest(captureSettings));
@@ -1278,29 +1301,34 @@ public final class PhotoSession {
 
     /** Writes IMU EXIF + sidecar for an already-assembled payload. Safe to run off-thread. */
     private void writeImuArtifacts(String photoPath, JSONObject payload, ImuRecorder imu) {
-        long imuStartMs = System.currentTimeMillis();
-        try {
-            PhotoExifMetadataWriter.writeImuPayload(photoPath, payload);
-            BlePhotoTimingLog.event(
-                    "CAPTURE STORAGE",
-                    "IMU EXIF write completed in "
+        try (PhotoPersistenceRegistry.Lease persistence = PhotoPersistenceRegistry.beginForBuild(photoPath)) {
+            boolean metadataSucceeded = true;
+            long imuStartMs = System.currentTimeMillis();
+            try {
+                PhotoExifMetadataWriter.writeImuPayload(photoPath, payload);
+                BlePhotoTimingLog.event(
+                        "CAPTURE STORAGE",
+                        "IMU EXIF write completed in "
+                                + (System.currentTimeMillis() - imuStartMs)
+                                + "ms");
+            } catch (IOException e) {
+                metadataSucceeded = false;
+                Log.w(TAG, "Failed to write IMU EXIF on photo: " + photoPath, e);
+            }
+            long sidecarStartMs = System.currentTimeMillis();
+            String imuPath = imu.writeSidecar(photoPath, payload);
+            if (imuPath != null) {
+                Log.d(TAG, "IMU sidecar saved: " + imuPath);
+            }
+            BlePhotoTimingLog.capturePhase(
+                    "still_imu_metadata_done",
+                    "IMU sidecar write completed in "
+                            + (System.currentTimeMillis() - sidecarStartMs)
+                            + "ms; total metadata finalization="
                             + (System.currentTimeMillis() - imuStartMs)
                             + "ms");
-        } catch (IOException e) {
-            Log.w(TAG, "Failed to write IMU EXIF on photo: " + photoPath, e);
+            if (metadataSucceeded && imuPath != null) persistence.complete();
         }
-        long sidecarStartMs = System.currentTimeMillis();
-        String imuPath = imu.writeSidecar(photoPath, payload);
-        if (imuPath != null) {
-            Log.d(TAG, "IMU sidecar saved: " + imuPath);
-        }
-        BlePhotoTimingLog.capturePhase(
-                "still_imu_metadata_done",
-                "IMU sidecar write completed in "
-                        + (System.currentTimeMillis() - sidecarStartMs)
-                        + "ms; total metadata finalization="
-                        + (System.currentTimeMillis() - imuStartMs)
-                        + "ms");
     }
 
     /**
@@ -1321,8 +1349,8 @@ public final class PhotoSession {
         Future<Boolean> persistence;
         if (persistToDisk) {
             persistence =
-                    persistenceExecutor()
-                            .submit(
+                    PhotoPersistenceRegistry.submitForBuild(
+                            persistenceExecutor(), targetPath,
                                     () -> {
                                         boolean ok = saveImageDataToFile(bytes, targetPath);
                                         if (!ok) {
@@ -1381,7 +1409,7 @@ public final class PhotoSession {
 
     private boolean saveImageDataToFile(byte[] data, String filePath) {
         long storageStartMs = System.currentTimeMillis();
-        try {
+        try (PhotoPersistenceRegistry.Lease persistence = PhotoPersistenceRegistry.beginForBuild(filePath)) {
             File file = new File(filePath);
 
             File parentDir = file.getParentFile();
@@ -1428,6 +1456,7 @@ public final class PhotoSession {
                     "image save completed in "
                             + (System.currentTimeMillis() - storageStartMs)
                             + "ms");
+            persistence.complete();
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Error saving image", e);
@@ -1481,6 +1510,7 @@ public final class PhotoSession {
     }
 
     private void finishSuccessfulPhotoCapture() {
+        releaseCapturePersistence(true);
         clearActiveCapture();
         shotState = AeStateMachine.ShotState.IDLE;
         dispatchNextPhotoRequest();
@@ -1649,6 +1679,7 @@ public final class PhotoSession {
     }
 
     private void notifyPhotoError(CameraOperationError error) {
+        releaseCapturePersistence(false);
         resetCaptureMetadataState();
         CameraNeoService.PhotoCaptureCallback callback =
                 activeCapture != null ? activeCapture.callback : null;
@@ -1801,6 +1832,8 @@ public final class PhotoSession {
                 resolvedConfig.put("requestedSize", requestedSize);
             }
             resolvedConfig.put("source", currentIsFromSdk() ? "sdk" : "button");
+            resolvedConfig.put("qualityProfile",
+                    currentCaptureSettings().qualityProfile.resolvedName(currentIsFromSdk()));
 
             Long exposureTimeNs = currentExposureTimeNs();
             if (exposureTimeNs != null) {
@@ -2604,6 +2637,11 @@ public final class PhotoSession {
         return getJpegQualityForSize();
     }
 
+    /** Effective sizing/encoding policy; SDK-origin archival photos can request local quality. */
+    public boolean photoRequestUsesSdkQuality() {
+        return currentCaptureSettings().qualityProfile.usesSdkQuality(currentIsFromSdk());
+    }
+
     /** In-flight {@code camera_warm_up} request held while the session opens/configures. */
     private static final class WarmUpRequest {
         @Nullable final String size;
@@ -2659,6 +2697,10 @@ public final class PhotoSession {
         if (baseline.isFromSdk != request.isFromSdk) {
             return BlePhotoTimingLog.WarmSessionReason.MISMATCH_SDK;
         }
+        if (baseline.usesSdkQuality
+                != request.captureSettings.qualityProfile.usesSdkQuality(request.isFromSdk)) {
+            return BlePhotoTimingLog.WarmSessionReason.MISMATCH;
+        }
         if (!Objects.equals(baseline.exposureTimeNs, request.exposureTimeNs)) {
             return BlePhotoTimingLog.WarmSessionReason.MISMATCH_EXPOSURE;
         }
@@ -2682,6 +2724,10 @@ public final class PhotoSession {
                 + baseline.isFromSdk
                 + " captureIsFromSdk="
                 + request.isFromSdk
+                + " warmSdkQuality="
+                + baseline.usesSdkQuality
+                + " captureSdkQuality="
+                + request.captureSettings.qualityProfile.usesSdkQuality(request.isFromSdk)
                 + " warmExposureNs="
                 + baseline.exposureTimeNs
                 + " captureExposureNs="
@@ -2692,6 +2738,7 @@ public final class PhotoSession {
     private static final class ConfiguredCameraConfig {
         @Nullable final String size;
         final boolean isFromSdk;
+        final boolean usesSdkQuality;
         @Nullable final Long exposureTimeNs;
 
         /** Resolved ZSL applied to the open preview/still path. */
@@ -2703,11 +2750,13 @@ public final class PhotoSession {
         ConfiguredCameraConfig(
                 @Nullable String size,
                 boolean isFromSdk,
+                boolean usesSdkQuality,
                 @Nullable Long exposureTimeNs,
                 boolean zsl,
                 boolean mfnr) {
             this.size = size;
             this.isFromSdk = isFromSdk;
+            this.usesSdkQuality = usesSdkQuality;
             this.exposureTimeNs = exposureTimeNs;
             this.zsl = zsl;
             this.mfnr = mfnr;
@@ -2724,6 +2773,7 @@ public final class PhotoSession {
         boolean differsFrom(
                 @Nullable String otherSize,
                 boolean otherIsFromSdk,
+                boolean otherUsesSdkQuality,
                 @Nullable Long otherExposureTimeNs,
                 boolean otherZsl,
                 boolean otherMfnr) {
@@ -2731,6 +2781,9 @@ public final class PhotoSession {
                 return true;
             }
             if (isFromSdk != otherIsFromSdk) {
+                return true;
+            }
+            if (usesSdkQuality != otherUsesSdkQuality) {
                 return true;
             }
             if (!Objects.equals(exposureTimeNs, otherExposureTimeNs)) {

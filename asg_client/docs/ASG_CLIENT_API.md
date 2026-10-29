@@ -13,6 +13,57 @@ Both paths funnel into `CommandProcessor.processJsonCommand(JSONObject)`, so all
 
 ## Architecture
 
+### Unified recording profile (personal fork)
+
+Capability `recording_profile_version: 1` permits `set_recording_profile` over BLE. It atomically
+persists `revision`, `width`, `height`, `fps`, `maxRecordingTimeMinutes`, `mode` (`local` or `phone`),
+`segmentMaxBytes`, and `maxBacklogBytes`. Optional `requestId` correlates the `settings_ack`:
+`setting: "recording_profile"`, `status: "applied"`, and the actual full profile as flat fields.
+An omitted request ID supports reconnect replay without an ACK. A revision cannot be reused for different values.
+Supported sizes are 1280×720 and 1920×1080, fps 5/15/30, and durations 0/3/5/10/15/20/30/60/120;
+0 disables the session timer while physical storage and byte limits remain enforced.
+
+App `start_video_recording` uses `requestId`, `useRecordingProfile: true`, and `profileRevision`.
+The physical long press resolves the same stored profile. Phone-mode starts consume the authenticated
+single-use readiness grant described in [personal media sync](features/personal-media-sync.md).
+The grant predetermines the session ID for both entry points. No readiness means no recording,
+with an audio cue on physical starts. Stop remains available while starting or recording.
+
+Authoritative `video_recording_status` includes `requestId`/`sessionId`, `origin` (`app`/`button`),
+`segmented`, and the immutable `profile` snapshot. Phone mode adds `grantId` and `maxSessionBytes`.
+Terminal status includes `segmentCount`, `stopReason`, and `success`, and is persisted before send.
+`get_video_recording_status` without a request ID returns the actual active session or last terminal;
+when neither exists it returns `recording_status` with `recording: false`. A specific ID recovers
+only that session. A process crash before a terminal result remains unknown, never inferred saved.
+
+### Shared local photo quality
+
+The optional `take_photo` field `qualityProfile: "local"` selects the same
+resolution targets and JPEG quality (95) as the physical camera button. It is
+accepted only for `save: true`, an empty/omitted `webhookUrl`, and `mode: "photo"`
+(or omitted mode). Unknown/non-string profiles and incompatible capture shapes
+receive a correlated `photo_response` error with code `INVALID_QUALITY_PROFILE`
+before output allocation or capture. Omitted or `"default"` quality preserves
+existing request behavior.
+
+`button_photo_setting` still stores `size` (`low`, `medium`, `high`, `max`). Its
+successful `settings_ack` has `setting: "button_photo"`, the effective stored
+`size`, and `localPhotoQualityVersion: 1`. Check the capability before sending
+Local requests; older glasses may ignore unknown request fields.
+
+Local resolution targets are 960×720, 1440×1088, and 3264×2448 for Low, Medium,
+and High. Maximum uses the largest supported JPEG output. The camera chooses a
+supported size, so actual dimensions may differ from targets. Resolved photo
+configuration reports width, height, JPEG quality and `qualityProfile` (`sdk` or
+`local`) separately from `source` (`sdk` or `button`). Capture origin, request ID,
+shutter feedback, local storage, and subsequent gallery transfer remain intact.
+
+Size-only default updates leave advanced scan tuning and global camera settings
+alone. Quality and size are snapshotted per queued photo, so an update affects
+subsequent captures rather than reconfiguring an already queued request.
+
+### Command routing
+
 ```
 ADB / Debug APK (intent)              Phone app (BLE)
        │                                    │
@@ -257,6 +308,62 @@ Same battery constraint as photo. `recording_started` is the successful start st
 ```json
 {"type": "video_recording_status", "success": true, "status": "recording_started", "timestamp": 1708963201234}
 ```
+
+#### Segmented recording (personal-fork preview)
+
+Requires the personal development package, Android API 26+, and the explicit
+`segmented_recording_version: 1` capability. This experimental mode keeps capture
+running across MP4 file rollover so the companion can offload completed segments.
+A five-minute 720p trial demonstrated rollover, verified offload during capture,
+and automatic Stop. Boundary continuity, audible synchronization, interruption
+recovery, and unplugged endurance still need physical validation; independent
+decoding alone does not establish gapless capture.
+
+```json
+{
+  "type": "start_video_recording",
+  "requestId": "labvideo-example-unique-session",
+  "settings": {"width": 1280, "height": 720, "fps": 30},
+  "save": true,
+  "sound": true,
+  "segmented": true,
+  "segmentMaxBytes": 67108864,
+  "maxBacklogBytes": 268435456,
+  "maxSessionBytes": 2147483648,
+  "maxRecordingTimeMinutes": 60
+}
+```
+
+| Field | Contract |
+| --- | --- |
+| `requestId` | Unique per session, 1–128 UTF-8 bytes. Do not reuse a completed session ID. |
+| `save` | Must be `true`. |
+| `segmented` | Must be `true` to select this mode; omission retains ordinary recording. |
+| `segmentMaxBytes` | Optional, default 64 MiB; accepts 8–256 MiB. |
+| `maxBacklogBytes` | Optional, default 256 MiB; at least three segments and at most 4 GiB. |
+| `maxSessionBytes` | Required byte allowance, at least one segment. |
+| `maxRecordingTimeMinutes` | Session duration; zero disables the time limit while byte/backlog/storage limits remain. |
+
+Segments remain hidden as `.mp4.partial` files until close, track verification,
+file sync, and publication. The manifest adds `session_id` and `segment_index`
+for finalized files. The companion verifies a durable phone copy before reclaiming
+that exact source through the [authenticated local sync protocol](features/personal-media-sync.md).
+This mode creates no IMU sidecars or thumbnails. Unverified and interrupted files
+remain available for recovery rather than being overwritten to free space.
+
+After final segment validation, `video_recording_status` includes top-level
+`sessionId`, `segmentCount` (contiguous finalized files), and `stopReason`.
+Successful termination uses `status: "recording_stopped"`; recorder/finalization
+failure uses `status: "error"` with `success: false`. Stop reasons include
+`user_requested`, `max_duration`, `low_battery`, `backlog_full`,
+`session_byte_limit`, `storage_low`, `segment_limit`, `recorder_error`,
+`segment_error`, `finalization_error`, and `status_persistence_error`.
+No terminal event may claim a prepared or unverified segment as completed.
+
+Matching `requestId` queries through idle `stop_video_recording` or
+`get_video_recording_status` can replay persisted terminal information in `data`.
+Clients must retain session identity/count for reconnect recovery and must not
+automatically restart recording.
 
 #### `stop_video_recording`
 

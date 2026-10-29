@@ -28,6 +28,12 @@
   </a>
 </div>
 
+## Local Mentra Live development
+
+For this checkout's custom glasses software and Glasses Lab Android companion,
+see the [personal development workflow](README.personal-dev.md): which project to
+edit, Windows build/test commands, device deployment, and restoring stock.
+
 ## Write Once, Run on Any Smart Glasses
 
 MentraOS is how developers and businesses build smart glasses apps.

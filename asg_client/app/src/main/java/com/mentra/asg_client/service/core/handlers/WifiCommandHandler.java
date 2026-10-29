@@ -388,6 +388,17 @@ public class WifiCommandHandler implements ICommandHandler {
                 return false;
             }
 
+            // The paired phone provisions this random token over BLE; never include it in logs.
+            if (serviceManager.getCameraServer() != null) {
+                if (!requestedState) {
+                    serviceManager.getCameraServer().configureLabSync(null, null, null);
+                } else if (data.has("sync_token")) {
+                    serviceManager.getCameraServer().configureLabSync(data.getString("sync_token"),
+                            networkManager::isHotspotEnabled,
+                            () -> networkManager.getHotspotSsid() + "\n" + networkManager.getHotspotPassword());
+                }
+            }
+
             boolean currentState = networkManager.isHotspotEnabled();
 
             // Check if already in requested state
